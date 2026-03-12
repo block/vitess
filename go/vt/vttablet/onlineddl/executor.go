@@ -76,21 +76,19 @@ var (
 	ErrMigrationNotFound = errors.New("migration not found")
 )
 
-var (
-	staleMigrationMinutesStats = stats.NewGauge("OnlineDDLStaleMigrationMinutes", "longest stale migration in minutes")
-)
+var staleMigrationMinutesStats = stats.NewGauge("OnlineDDLStaleMigrationMinutes", "longest stale migration in minutes")
+
+// fixCompletedTimestampDone fixes a nil `completed_timestamp` columns, see
+// https://github.com/vitessio/vitess/issues/13927
+// The fix is in release-18.0
+// TODO: remove in release-19.0
+var fixCompletedTimestampDone bool
 
 var (
-	// fixCompletedTimestampDone fixes a nil `completed_timestamp` columns, see
-	// https://github.com/vitessio/vitess/issues/13927
-	// The fix is in release-18.0
-	// TODO: remove in release-19.0
-	fixCompletedTimestampDone bool
+	emptyResult                           = &sqltypes.Result{}
+	acceptableDropTableIfExistsErrorCodes = []sqlerror.ErrorCode{sqlerror.ERCantFindFile, sqlerror.ERNoSuchTable}
+	copyAlgorithm                         = sqlparser.AlgorithmValue(sqlparser.CopyStr)
 )
-
-var emptyResult = &sqltypes.Result{}
-var acceptableDropTableIfExistsErrorCodes = []sqlerror.ErrorCode{sqlerror.ERCantFindFile, sqlerror.ERNoSuchTable}
-var copyAlgorithm = sqlparser.AlgorithmValue(sqlparser.CopyStr)
 
 var (
 	migrationCheckInterval  = 1 * time.Minute
@@ -147,9 +145,10 @@ type Executor struct {
 	requestGCChecksFunc   func()
 	tabletAlias           *topodatapb.TabletAlias
 
-	keyspace string
-	shard    string
-	dbName   string
+	keyspace      string
+	shard         string
+	dbName        string
+	sidecarDBName string
 
 	initMutex      sync.Mutex
 	migrationMutex sync.Mutex
@@ -261,7 +260,7 @@ func (e *Executor) executeQueryWithSidecarDBReplacement(ctx context.Context, que
 	defer conn.Recycle()
 
 	// Replace any provided sidecar DB qualifiers with the correct one.
-	uq, err := e.env.Environment().Parser().ReplaceTableQualifiers(query, sidecar.DefaultName, sidecar.GetName())
+	uq, err := e.env.Environment().Parser().ReplaceTableQualifiers(query, sidecar.DefaultName, e.sidecarDBName)
 	if err != nil {
 		return nil, err
 	}
@@ -278,6 +277,10 @@ func (e *Executor) InitDBConfig(keyspace, shard, dbName string) {
 	e.keyspace = keyspace
 	e.shard = shard
 	e.dbName = dbName
+	// Capture the sidecar DB name now (during tm.Start), when the global
+	// sidecar.GetName() still reflects this shard's value. In vtcombo, Open()
+	// is called later when the global may have been overwritten by another shard.
+	e.sidecarDBName = sidecar.GetName()
 }
 
 // Open opens database pool and initializes the schema
@@ -296,7 +299,7 @@ func (e *Executor) Open() error {
 	})
 	e.vreplicationLastError = make(map[string]*vterrors.LastError)
 
-	if sidecar.GetName() != sidecar.DefaultName {
+	if e.sidecarDBName != sidecar.DefaultName {
 		e.execQuery = e.executeQueryWithSidecarDBReplacement
 	} else {
 		e.execQuery = e.executeQuery
@@ -505,7 +508,6 @@ func (e *Executor) executeDirectly(ctx context.Context, onlineDDL *schema.Online
 		defer conn.ExecuteFetch("SET foreign_key_checks=@vt_onlineddl_foreign_key_checks", 0, false)
 	}
 	_, err = conn.ExecuteFetch(onlineDDL.SQL, 0, false)
-
 	if err != nil {
 		// let's see if this error is actually acceptable
 		if merr, ok := err.(*sqlerror.SQLError); ok {
@@ -1497,7 +1499,6 @@ func (e *Executor) ExecuteWithVReplication(ctx context.Context, onlineDDL *schem
 }
 
 func (e *Executor) readMigration(ctx context.Context, uuid string) (onlineDDL *schema.OnlineDDL, row sqltypes.RowNamedValues, err error) {
-
 	query, err := sqlparser.ParseAndBind(sqlSelectMigration,
 		sqltypes.StringBindVariable(uuid),
 	)
@@ -2134,7 +2135,6 @@ func (e *Executor) executeRevert(ctx context.Context, onlineDDL *schema.OnlineDD
 // - empty, in which case the migration is noop and implicitly successful, or
 // - non-empty, in which case the migration turns to be an ALTER
 func (e *Executor) evaluateDeclarativeDiff(ctx context.Context, onlineDDL *schema.OnlineDDL) (diff schemadiff.EntityDiff, err error) {
-
 	// Modify the CREATE TABLE statement to indicate a different, made up table name, known as the "comparison table"
 	ddlStmt, _, err := schema.ParseOnlineDDLStatement(onlineDDL.SQL, e.env.Environment().Parser())
 	if err != nil {
@@ -2544,7 +2544,6 @@ func (e *Executor) executeAlterViewOnline(ctx context.Context, onlineDDL *schema
 
 // executeSpecialAlterDirectDDLActionMigration executes a special plan using a direct ALTER TABLE statement.
 func (e *Executor) executeSpecialAlterDirectDDLActionMigration(ctx context.Context, onlineDDL *schema.OnlineDDL) (err error) {
-
 	forceCutOverAfter, err := onlineDDL.StrategySetting().ForceCutOverAfter()
 	if err != nil {
 		return err
@@ -3834,7 +3833,8 @@ func (e *Executor) updateSchemaAnalysis(ctx context.Context, uuid string,
 	addedUniqueKeys, removedUniqueKeys int, removedUniqueKeyNames string,
 	removedForeignKeyNames string,
 	droppedNoDefaultColumnNames string, expandedColumnNames string,
-	revertibleNotes []string) error {
+	revertibleNotes []string,
+) error {
 	notes := strings.Join(revertibleNotes, "\n")
 	query, err := sqlparser.ParseAndBind(sqlUpdateSchemaAnalysis,
 		sqltypes.Int64BindVariable(int64(addedUniqueKeys)),
@@ -4625,7 +4625,6 @@ func (e *Executor) SubmitMigration(
 	)
 	if err != nil {
 		return nil, vterrors.Wrapf(err, "submitting migration %v", onlineDDL.UUID)
-
 	}
 	log.Infof("SubmitMigration: migration %s submitted", onlineDDL.UUID)
 
@@ -4694,7 +4693,8 @@ func (e *Executor) ShowMigrationLogs(ctx context.Context, stmt *sqlparser.ShowMi
 
 // onSchemaMigrationStatus is called when a status is set/changed for a running migration
 func (e *Executor) onSchemaMigrationStatus(ctx context.Context,
-	uuid string, status schema.OnlineDDLStatus, dryRun bool, progressPct float64, etaSeconds int64, rowsCopied int64, hint string) (err error) {
+	uuid string, status schema.OnlineDDLStatus, dryRun bool, progressPct float64, etaSeconds int64, rowsCopied int64, hint string,
+) (err error) {
 	if dryRun && status != schema.OnlineDDLStatusFailed {
 		// We don't consider dry-run reports unless there's a failure
 		return nil
