@@ -322,6 +322,8 @@ func (s *Server) Close() {
 	}
 	s.closed = true
 
+	log.Infof("MySQL topo: closing server (root=%s, schema=%s)", s.root, s.schemaName)
+
 	// Cancel the server context
 	if s.cancel != nil {
 		s.cancel()
@@ -334,7 +336,9 @@ func (s *Server) Close() {
 
 	// Close the database connection
 	if s.db != nil {
-		s.db.Close()
+		if err := s.db.Close(); err != nil {
+			log.Warningf("MySQL topo: error closing database connection (root=%s, schema=%s): %v", s.root, s.schemaName, err)
+		}
 	}
 }
 

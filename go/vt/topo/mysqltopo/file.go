@@ -47,7 +47,9 @@ func (s *Server) Create(ctx context.Context, filePath string, contents []byte) (
 	}
 	defer func() {
 		if tx != nil {
-			_ = tx.Rollback() // Rollback if not committed
+			if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+				log.Warningf("MySQL topo: rollback error: %v", err)
+			}
 		}
 	}()
 
@@ -90,7 +92,9 @@ func (s *Server) Update(ctx context.Context, filePath string, contents []byte, v
 	}
 	defer func() {
 		if tx != nil {
-			_ = tx.Rollback() // Rollback if not committed
+			if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+				log.Warningf("MySQL topo: rollback error: %v", err)
+			}
 		}
 	}()
 
@@ -278,7 +282,9 @@ func (s *Server) Delete(ctx context.Context, filePath string, version topo.Versi
 	}
 	defer func() {
 		if tx != nil {
-			_ = tx.Rollback() // Rollback if not committed
+			if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+				log.Warningf("MySQL topo: rollback error: %v", err)
+			}
 		}
 	}()
 

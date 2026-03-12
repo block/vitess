@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	"vitess.io/vitess/go/vt/log"
 	"vitess.io/vitess/go/vt/topo"
 )
 
@@ -62,11 +63,13 @@ func (s *Server) Watch(ctx context.Context, filePath string) (current *topo.Watc
 
 	// Add to notification system
 	ns.addWatcher(w)
+	log.Infof("MySQL topo: registered watch on %s", fullPath)
 
 	// Start a goroutine to handle cleanup when context is cancelled
 	go func() {
 		<-watchCtx.Done()
 		ns.removeWatcher(w)
+		log.Infof("MySQL topo: deregistered watch on %s", fullPath)
 
 		// Check if this watcher was cancelled due to deletion
 		wasDeleted := w.deleted.Load()
@@ -128,11 +131,13 @@ func (s *Server) WatchRecursive(ctx context.Context, pathPrefix string) ([]*topo
 
 	// Add to notification system
 	ns.addRecursiveWatcher(w)
+	log.Infof("MySQL topo: registered recursive watch on prefix %s", fullPathPrefix)
 
 	// Start a goroutine to handle cleanup when context is cancelled
 	go func() {
 		<-watchCtx.Done()
 		ns.removeRecursiveWatcher(w)
+		log.Infof("MySQL topo: deregistered recursive watch on prefix %s", fullPathPrefix)
 
 		// Send final interrupted error and close channel
 		select {

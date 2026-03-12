@@ -133,6 +133,9 @@ else
         echo "  # or"
         echo "  sudo service mysql start"
         echo "  # or start it manually with mysqld"
+        echo ""
+        echo "If using Docker, you can start a MySQL container with:"
+        echo "  docker run -d --name mysql-topo -p ${MYSQL_PORT}:3306 -e MYSQL_ALLOW_EMPTY_PASSWORD=yes mysql:8.0 --gtid-mode=ON --enforce-gtid-consistency --log-bin"
         exit 1
     fi
 fi

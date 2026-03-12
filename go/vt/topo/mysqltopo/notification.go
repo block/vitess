@@ -82,6 +82,10 @@ type notificationSystem struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	refCount atomic.Int32
+
+	// dead indicates the notification system has exhausted retries and is
+	// no longer processing binlog events. Watches will not receive updates.
+	dead atomic.Bool
 }
 
 // watcher represents a single file watch.
@@ -109,7 +113,11 @@ func getNotificationSystem(schemaName, serverAddr string) (*notificationSystem, 
 	defer notificationSystemsMu.Unlock()
 
 	if ns, exists := notificationSystems[key]; exists {
+		if ns.dead.Load() {
+			log.Warningf("MySQL topo notification system for schema %s is dead, watches will not receive updates", schemaName)
+		}
 		ns.refCount.Add(1)
+		log.Infof("MySQL topo notification system for schema %s: refcount incremented to %d", schemaName, ns.refCount.Load())
 		return ns, nil
 	}
 
@@ -132,8 +140,10 @@ func releaseNotificationSystem(schemaName string) {
 	defer notificationSystemsMu.Unlock()
 
 	if ns, exists := notificationSystems[key]; exists {
-		ns.refCount.Add(-1)
-		if ns.refCount.Load() <= 0 {
+		newCount := ns.refCount.Add(-1)
+		log.Infof("MySQL topo notification system for schema %s: refcount decremented to %d", schemaName, newCount)
+		if newCount <= 0 {
+			log.Infof("MySQL topo notification system for schema %s: refcount reached zero, closing", schemaName)
 			ns.close()
 			delete(notificationSystems, key)
 		}
@@ -343,7 +353,8 @@ func (ns *notificationSystem) run() {
 
 			retryCount++
 			if retryCount > maxRetries {
-				log.Errorf("Failed to create new binlog connection after %d retries: %v", maxRetries, err)
+				log.Errorf("MySQL topo notification system for schema %s is now dead after %d retries: %v. Watches will no longer receive updates.", ns.schemaName, maxRetries, err)
+				ns.dead.Store(true)
 				return
 			}
 
@@ -458,7 +469,10 @@ func (ns *notificationSystem) processEventStream(eventChan <-chan mysql.BinlogEv
 			// Update position tracking with GTID from the event if it's a GTID event
 			// Only extract GTID from actual GTID events and only if we have a valid format
 			if !ns.format.IsZero() && ev.IsGTID() {
-				if gtidEvent, _, _, _, err := ev.GTID(ns.format); err == nil {
+				gtidEvent, _, _, _, err := ev.GTID(ns.format)
+				if err != nil {
+					log.Warningf("MySQL topo: failed to extract GTID from binlog event: %v", err)
+				} else {
 					ns.lastPositionMu.Lock()
 					if ns.lastPosition.GTIDSet != nil {
 						ns.lastPosition.GTIDSet = ns.lastPosition.GTIDSet.AddGTID(gtidEvent)
@@ -593,6 +607,7 @@ func (ns *notificationSystem) checkForTopoDataChanges() error {
 	for path, entry := range currentData {
 		if knownVersion, exists := ns.knownKeys[path]; !exists || knownVersion != entry.version {
 			// This is a new or updated entry
+			log.Infof("MySQL topo: detected change for path %s (version %d)", path, entry.version)
 			ns.knownKeys[path] = entry.version
 			// Notify watchers of the change
 			ns.notifyChange(path, entry.data, MySQLVersion(entry.version))
@@ -603,6 +618,7 @@ func (ns *notificationSystem) checkForTopoDataChanges() error {
 	for path := range ns.knownKeys {
 		if _, exists := currentData[path]; !exists {
 			// This entry was deleted
+			log.Infof("MySQL topo: detected deletion for path %s", path)
 			delete(ns.knownKeys, path)
 			// Notify watchers of the deletion
 			ns.notifyDeletion(path)
@@ -675,7 +691,8 @@ func (ns *notificationSystem) notifyChange(path string, data []byte, version top
 			select {
 			case w.changes <- watchData:
 			case <-w.ctx.Done():
-				// Watcher was cancelled, will be cleaned up later
+			case <-time.After(5 * time.Second):
+				log.Warningf("MySQL topo: slow consumer for watch on %s, notification dropped", path)
 			}
 		}
 	}
@@ -695,7 +712,8 @@ func (ns *notificationSystem) notifyChange(path string, data []byte, version top
 				select {
 				case w.changes <- watchData:
 				case <-w.ctx.Done():
-					// Watcher was cancelled, will be cleaned up later
+				case <-time.After(5 * time.Second):
+					log.Warningf("MySQL topo: slow consumer for recursive watch on prefix %s (path %s), notification dropped", prefix, path)
 				}
 			}
 		}
@@ -720,7 +738,8 @@ func (ns *notificationSystem) notifyDeletion(path string) {
 				w.deleted.Store(true)
 				w.cancel()
 			case <-w.ctx.Done():
-				// Watcher was cancelled, will be cleaned up later
+			case <-time.After(5 * time.Second):
+				log.Warningf("MySQL topo: slow consumer for deletion watch on %s, notification dropped", path)
 			}
 		}
 	}
@@ -738,10 +757,9 @@ func (ns *notificationSystem) notifyDeletion(path string) {
 			for w := range watchers {
 				select {
 				case w.changes <- watchData:
-					// For recursive watchers, we don't automatically cancel on single file deletion
-					// since they may be watching for other files under the same prefix
 				case <-w.ctx.Done():
-					// Watcher was cancelled, will be cleaned up later
+				case <-time.After(5 * time.Second):
+					log.Warningf("MySQL topo: slow consumer for recursive deletion watch on prefix %s (path %s), notification dropped", prefix, path)
 				}
 			}
 		}
