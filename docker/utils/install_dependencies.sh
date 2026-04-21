@@ -207,10 +207,10 @@ rm -rf /tmp/percona-release.deb /tmp/percona-release-extract
 if [ "$ARCH" != "aarch64" ]; then
 	case "${FLAVOR}" in
 	mysql80)
-	    echo "deb [signed-by=/etc/apt/keyrings/mysql.gpg] http://repo.mysql.com/apt/debian/ ${DEBIAN_CODENAME} mysql-8.0" > /etc/apt/sources.list.d/mysql.list
+	    echo "deb [signed-by=/etc/apt/keyrings/mysql.gpg] https://repo.mysql.com/apt/debian/ ${DEBIAN_CODENAME} mysql-8.0" > /etc/apt/sources.list.d/mysql.list
 	    ;;
 	mysql84)
-	    echo "deb [signed-by=/etc/apt/keyrings/mysql.gpg] http://repo.mysql.com/apt/debian/ ${DEBIAN_CODENAME} mysql-8.4-lts" > /etc/apt/sources.list.d/mysql.list
+	    echo "deb [signed-by=/etc/apt/keyrings/mysql.gpg] https://repo.mysql.com/apt/debian/ ${DEBIAN_CODENAME} mysql-8.4-lts" > /etc/apt/sources.list.d/mysql.list
 	    ;;
 	esac
 fi
@@ -218,20 +218,20 @@ fi
 # Add extra apt repositories for Percona Server and/or Percona XtraBackup.
 case "${FLAVOR}" in
 mysql80)
-    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] http://repo.percona.com/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona.list
+    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] https://repo.percona.com/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona.list
     ;;
 mysql84)
-    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] http://repo.percona.com/pxb-84-lts/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona.list
+    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] https://repo.percona.com/pxb-84-lts/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona.list
     ;;
 percona80)
-    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] http://repo.percona.com/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona.list
-    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] http://repo.percona.com/ps-80/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona80.list
+    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] https://repo.percona.com/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona.list
+    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] https://repo.percona.com/ps-80/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona80.list
     ;;
 percona84)
-    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] http://repo.percona.com/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona.list
-    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] http://repo.percona.com/pxb-84-lts/apt ${DEBIAN_CODENAME} main" >> /etc/apt/sources.list.d/percona.list
-    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] http://repo.percona.com/telemetry/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona-telemetry.list
-    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] http://repo.percona.com/ps-84-lts/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona84.list
+    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] https://repo.percona.com/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona.list
+    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] https://repo.percona.com/pxb-84-lts/apt ${DEBIAN_CODENAME} main" >> /etc/apt/sources.list.d/percona.list
+    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] https://repo.percona.com/telemetry/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona-telemetry.list
+    echo "deb [signed-by=/etc/apt/keyrings/percona.gpg] https://repo.percona.com/ps-84-lts/apt ${DEBIAN_CODENAME} main" > /etc/apt/sources.list.d/percona84.list
     ;;
 esac
 
@@ -255,8 +255,14 @@ esac
 
 # Install flavor-specific packages
 apt-get update
-for i in $(seq 1 $MAX_RETRY); do apt-get install -y --no-install-recommends "${PACKAGES[@]}" && break; done
-if [[ "$i" = "$MAX_RETRY" ]]; then
+install_ok=false
+for i in $(seq 1 $MAX_RETRY); do
+	if apt-get install -y --no-install-recommends "${PACKAGES[@]}"; then
+		install_ok=true
+		break
+	fi
+done
+if ! $install_ok; then
 	exit 1
 fi
 
