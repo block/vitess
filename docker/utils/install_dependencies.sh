@@ -37,7 +37,7 @@ fi
 # Set number of times to retry a download
 MAX_RETRY=20
 
-MYSQL_GPG_KEY="B7B3B788A8D3785C"
+MYSQL_GPG_KEY="BCA43417C3B485DD128EC6D4B7B3B788A8D3785C"
 
 do_fetch() {
 	wget \
