@@ -17,6 +17,7 @@ on:
   pull_request:
     paths:
       - 'docker/vttestserver/**'
+      - 'docker/utils/**'
       - '.github/workflows/ghcr_build_vttestserver.yml'
 
 concurrency:
