@@ -1,7 +1,7 @@
 # .github/workflows/ghcr_build_vttestserver.yml — Publish vttestserver to GHCR
 #
-# Builds the vttestserver:mysql84 arm64 image and pushes to
-# ghcr.io/block/vitess/vttestserver.
+# Builds the vttestserver:mysql84 multi-arch image (amd64 + arm64) and pushes
+# to ghcr.io/block/vitess/vttestserver.
 #
 # Triggers:
 #   - Push to release-23.0: build + push (tagged as "latest" and SHA)
@@ -29,7 +29,7 @@ env:
 
 jobs:
   build-and-push:
-    name: Build vttestserver (mysql84, arm64)
+    name: Build vttestserver (mysql84)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -69,7 +69,7 @@ jobs:
         with:
           context: .
           file: ./docker/vttestserver/Dockerfile.mysql84
-          platforms: linux/arm64
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
