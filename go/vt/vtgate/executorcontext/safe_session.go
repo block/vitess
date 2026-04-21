@@ -63,6 +63,10 @@ type (
 		// as the query that started a new transaction on the shard belong to a vindex.
 		execReadQuery bool
 
+		// allowCrossShard is set by the ALLOW_CROSS_SHARD query directive to skip
+		// the SINGLE mode cross-shard check for the current query.
+		allowCrossShard bool
+
 		logging *ExecuteLogger
 
 		*vtgatepb.Session
@@ -246,6 +250,20 @@ func (session *SafeSession) SetExecReadQuery(value bool) {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	session.execReadQuery = value
+}
+
+// SetAllowCrossShard sets the allowCrossShard flag for the current query.
+func (session *SafeSession) SetAllowCrossShard(value bool) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	session.allowCrossShard = value
+}
+
+// GetAllowCrossShard returns the current allowCrossShard flag value.
+func (session *SafeSession) GetAllowCrossShard() bool {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return session.allowCrossShard
 }
 
 // SetQueryTimeout sets the query timeout
@@ -548,7 +566,8 @@ func (session *SafeSession) singleModeErrorOnCrossShard(txMode vtgatepb.Transact
 	// 1. The query comes from a lookup vindex.
 	// 2. The transaction mode is not Single.
 	// 3. The transaction is not in the normal shard session.
-	if session.execReadQuery || session.commitOrder != vtgatepb.CommitOrder_NORMAL || !session.isSingleDB(txMode) {
+	// 4. The ALLOW_CROSS_SHARD query directive is set.
+	if session.execReadQuery || session.allowCrossShard || session.commitOrder != vtgatepb.CommitOrder_NORMAL || !session.isSingleDB(txMode) {
 		return nil
 	}
 
