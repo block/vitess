@@ -85,8 +85,9 @@ mysql80)
 		mkdir -p /usr/local/mysql
 		tar xf /tmp/mysql-arm64.tar.xz --strip-components=1 -C /usr/local/mysql
 		rm -f /tmp/mysql-arm64.tar.xz
-		# Symlink mysqld into /usr/sbin so vitess can auto-detect it.
+		# Symlink MySQL binaries so they're in PATH for vitess and health checks.
 		ln -sf /usr/local/mysql/bin/mysqld /usr/sbin/mysqld
+		ln -sf /usr/local/mysql/bin/mysql /usr/bin/mysql
 		PACKAGES=(
 			percona-xtrabackup-80
 		)
@@ -130,8 +131,9 @@ mysql84)
 		mkdir -p /usr/local/mysql
 		tar xf /tmp/mysql-arm64.tar.xz --strip-components=1 -C /usr/local/mysql
 		rm -f /tmp/mysql-arm64.tar.xz
-		# Symlink mysqld into /usr/sbin so vitess can auto-detect it.
+		# Symlink MySQL binaries so they're in PATH for vitess and health checks.
 		ln -sf /usr/local/mysql/bin/mysqld /usr/sbin/mysqld
+		ln -sf /usr/local/mysql/bin/mysql /usr/bin/mysql
 		PACKAGES=(
 			percona-xtrabackup-84
 		)
