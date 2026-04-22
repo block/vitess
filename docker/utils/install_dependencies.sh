@@ -80,7 +80,7 @@ mysql80)
 			VERSION=8.0.43
 		fi
 		echo "Setting up MySQL ${VERSION} for ARM64 from official tarball"
-		apt-get install -y --no-install-recommends xz-utils libnuma1
+		apt-get install -y --no-install-recommends xz-utils libnuma1 libncurses6
 		do_fetch "https://dev.mysql.com/get/Downloads/MySQL-8.0/mysql-${VERSION}-linux-glibc2.28-aarch64.tar.xz" /tmp/mysql-arm64.tar.xz
 		mkdir -p /usr/local/mysql
 		tar xf /tmp/mysql-arm64.tar.xz --strip-components=1 -C /usr/local/mysql
@@ -126,7 +126,7 @@ mysql84)
 			VERSION=8.4.8
 		fi
 		echo "Setting up MySQL ${VERSION} for ARM64 from official tarball"
-		apt-get install -y --no-install-recommends xz-utils libnuma1
+		apt-get install -y --no-install-recommends xz-utils libnuma1 libncurses6
 		do_fetch "https://dev.mysql.com/get/Downloads/MySQL-8.4/mysql-${VERSION}-linux-glibc2.28-aarch64.tar.xz" /tmp/mysql-arm64.tar.xz
 		mkdir -p /usr/local/mysql
 		tar xf /tmp/mysql-arm64.tar.xz --strip-components=1 -C /usr/local/mysql
