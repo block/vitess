@@ -195,7 +195,7 @@ func TestConcurrentElections(t *testing.T) {
 	var allParticipants []topo.LeaderParticipation
 
 	// Create multiple elections with multiple participants each
-	for electionIdx := 0; electionIdx < numElections; electionIdx++ {
+	for electionIdx := range numElections {
 		electionName := fmt.Sprintf("concurrent-election-%d", electionIdx)
 
 		for participantIdx := range numParticipantsPerElection {

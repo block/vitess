@@ -292,10 +292,7 @@ func (lp *MySQLLeaderParticipation) maintainLeadership() {
 	defer lp.wg.Done()
 
 	// Ensure ticker interval is at least 1 second to avoid zero duration
-	tickerInterval := electionTTL / 3
-	if tickerInterval < 1 {
-		tickerInterval = 1
-	}
+	tickerInterval := max(electionTTL/3, 1)
 	ticker := time.NewTicker(time.Duration(tickerInterval) * time.Second)
 	defer ticker.Stop()
 

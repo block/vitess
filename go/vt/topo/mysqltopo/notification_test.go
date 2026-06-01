@@ -541,7 +541,7 @@ func TestNotificationSystemConcurrentAccess(t *testing.T) {
 		cleanup func()
 	}, numServers)
 
-	for i := 0; i < numServers; i++ {
+	for range numServers {
 		go func() {
 			defer wg.Done()
 			server, _, cleanup := createTestServer(t, sharedSchemaName)
