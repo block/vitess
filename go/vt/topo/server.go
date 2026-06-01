@@ -315,6 +315,12 @@ func (ts *Server) ConnForCell(ctx context.Context, cell string) (Conn, error) {
 		if ok && ci.ServerAddress == cc.cellInfo.ServerAddress && ci.Root == cc.cellInfo.Root {
 			return cc.conn, nil
 		}
+		// Cell info changed (ServerAddress or Root) — close the stale cached
+		// connection before replacing it to avoid a leak. The non-shared
+		// branch below does the same.
+		if ok {
+			cc.conn.Close()
+		}
 		conn, err := ts.factory.Create(cell, ts.globalServerAddress, ci.Root)
 		if err != nil {
 			return nil, vterrors.Wrap(err, fmt.Sprintf("failed to create topo connection for cell %v", cell))
