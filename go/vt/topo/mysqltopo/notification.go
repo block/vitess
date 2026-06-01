@@ -200,11 +200,19 @@ func newNotificationSystem(schemaName, serverAddr string) (*notificationSystem, 
 	// Create connection parameters for binlog streaming
 	cfg.DBName = schemaName
 
-	// Parse host and port from cfg.Addr
+	// Parse host and port from cfg.Addr. The go-sql-driver/mysql DSN allows
+	// addresses without a port (e.g. `tcp(localhost)/db`); fall back to the
+	// default MySQL port in that case.
 	host, portStr, err := net.SplitHostPort(cfg.Addr)
 	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to parse host and port from %s: %v", cfg.Addr, err)
+		var addrErr *net.AddrError
+		if errors.As(err, &addrErr) && addrErr.Err == "missing port in address" {
+			host = cfg.Addr
+			portStr = "3306"
+		} else {
+			db.Close()
+			return nil, fmt.Errorf("failed to parse host and port from %s: %v", cfg.Addr, err)
+		}
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
