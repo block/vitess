@@ -553,7 +553,7 @@ func (db *LocalCluster) createVTSchema() error {
 
 	var sidecardbExec sidecardb.Exec = func(ctx context.Context, query string, maxRows int, useDB bool) (*sqltypes.Result, error) {
 		if useDB {
-			_, err := conn.ExecuteFetch(fmt.Sprintf("use %s", sidecar.GetIdentifier()), 1, false)
+			_, err := conn.ExecuteFetch("use "+sidecar.GetIdentifier(), 1, false)
 			if err != nil {
 				return nil, err
 			}
