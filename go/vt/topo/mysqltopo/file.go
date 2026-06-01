@@ -19,7 +19,9 @@ package mysqltopo
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 
+	"vitess.io/vitess/go/vt/log"
 	"vitess.io/vitess/go/vt/topo"
 )
 
@@ -47,7 +49,7 @@ func (s *Server) Create(ctx context.Context, filePath string, contents []byte) (
 	defer func() {
 		if tx != nil {
 			if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
-				logWarningf("MySQL topo: rollback error: %v", err)
+				log.Warn("MySQL topo: rollback error", slog.Any("error", err))
 			}
 		}
 	}()
@@ -92,7 +94,7 @@ func (s *Server) Update(ctx context.Context, filePath string, contents []byte, v
 	defer func() {
 		if tx != nil {
 			if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
-				logWarningf("MySQL topo: rollback error: %v", err)
+				log.Warn("MySQL topo: rollback error", slog.Any("error", err))
 			}
 		}
 	}()
@@ -110,7 +112,7 @@ func (s *Server) Update(ctx context.Context, filePath string, contents []byte, v
 
 		expectedVersion := int64(version.(MySQLVersion))
 		if currentVersion != expectedVersion {
-			logInfof("Version mismatch for %s: current=%d, expected=%d", fullPath, currentVersion, expectedVersion)
+			log.Info("Version mismatch", slog.String("path", fullPath), slog.Int64("current_version", currentVersion), slog.Int64("expected_version", expectedVersion))
 			return nil, topo.NewError(topo.BadVersion, fullPath)
 		}
 
@@ -282,7 +284,7 @@ func (s *Server) Delete(ctx context.Context, filePath string, version topo.Versi
 	defer func() {
 		if tx != nil {
 			if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
-				logWarningf("MySQL topo: rollback error: %v", err)
+				log.Warn("MySQL topo: rollback error", slog.Any("error", err))
 			}
 		}
 	}()

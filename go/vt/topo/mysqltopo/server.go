@@ -40,7 +40,9 @@ import (
 	"crypto/x509"
 	"database/sql"
 	_ "embed"
+	"errors"
 	"fmt"
+	"log/slog"
 	"path"
 	"regexp"
 	"strconv"
@@ -52,6 +54,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"vitess.io/vitess/go/mysql/sqlerror"
+	"vitess.io/vitess/go/vt/log"
 	"vitess.io/vitess/go/vt/servenv"
 	"vitess.io/vitess/go/vt/topo"
 	"vitess.io/vitess/go/vt/utils"
@@ -159,7 +162,7 @@ func initRDSTLS() error {
 	rdsTLSOnce.Do(func() {
 		caCertPool := x509.NewCertPool()
 		if !caCertPool.AppendCertsFromPEM(rdsGlobalBundle) {
-			err = fmt.Errorf("failed to append RDS CA certificates")
+			err = errors.New("failed to append RDS CA certificates")
 			return
 		}
 		tlsConfig := &tls.Config{
@@ -185,7 +188,7 @@ func NewServer(serverAddr, root string) (*Server, error) {
 	// Since HasGlobalReadOnlyCell returns true, this connection should never actually be used.
 	// Return a minimal server that will fail if actually used, but allows the topology to be set up.
 	if cfg.User == "" {
-		logInfof("MySQL topo: skipping connection for DSN without credentials (will use global connection)")
+		log.Info("MySQL topo: skipping connection for DSN without credentials (will use global connection)")
 		return &Server{
 			root:       root,
 			serverAddr: serverAddr,
@@ -253,7 +256,7 @@ func NewServer(serverAddr, root string) (*Server, error) {
 		// Clean up expired data on startup (after tables are created)
 		server.cleanupExpiredData()
 	} else {
-		logInfof("MySQL topo tables already exist, operating in read-only mode (skipping table creation and binlog checks)")
+		log.Info("MySQL topo tables already exist, operating in read-only mode (skipping table creation and binlog checks)")
 	}
 
 	return server, nil
@@ -321,7 +324,7 @@ func (s *Server) Close() {
 	}
 	s.closed = true
 
-	logInfof("MySQL topo: closing server (root=%s, schema=%s)", s.root, s.schemaName)
+	log.Info("MySQL topo: closing server", slog.String("root", s.root), slog.String("schema", s.schemaName))
 
 	// Cancel the server context
 	if s.cancel != nil {
@@ -336,7 +339,7 @@ func (s *Server) Close() {
 	// Close the database connection
 	if s.db != nil {
 		if err := s.db.Close(); err != nil {
-			logWarningf("MySQL topo: error closing database connection (root=%s, schema=%s): %v", s.root, s.schemaName, err)
+			log.Warn("MySQL topo: error closing database connection", slog.String("root", s.root), slog.String("schema", s.schemaName), slog.Any("error", err))
 		}
 	}
 }
@@ -418,12 +421,12 @@ func (s *Server) cleanupExpiredData() {
 
 	// Clean up expired locks - ignore errors if table doesn't exist yet
 	if _, err := s.db.Exec("DELETE FROM topo_locks WHERE expires_at < ?", now); err != nil {
-		logInfof("Skipping lock cleanup (table may not exist yet): %v", err)
+		log.Info("Skipping lock cleanup (table may not exist yet)", slog.Any("error", err))
 	}
 
 	// Clean up expired elections - ignore errors if table doesn't exist yet
 	if _, err := s.db.Exec("DELETE FROM topo_elections WHERE expires_at < ?", now); err != nil {
-		logInfof("Skipping election cleanup (table may not exist yet): %v", err)
+		log.Info("Skipping election cleanup (table may not exist yet)", slog.Any("error", err))
 	}
 }
 
@@ -458,7 +461,7 @@ func checkMySQLConfiguration(db *sql.DB) error {
 	}
 
 	if logBin != "1" && logBin != "ON" {
-		return fmt.Errorf("binary logging is disabled but is required for MySQL topo server. Please set log_bin=ON in your MySQL configuration")
+		return errors.New("binary logging is disabled but is required for MySQL topo server. Please set log_bin=ON in your MySQL configuration")
 	}
 
 	return nil

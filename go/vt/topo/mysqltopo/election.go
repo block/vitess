@@ -19,10 +19,11 @@ package mysqltopo
 import (
 	"context"
 	"database/sql"
-	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
+	"vitess.io/vitess/go/vt/log"
 	"vitess.io/vitess/go/vt/topo"
 )
 
@@ -60,7 +61,7 @@ func (s *Server) NewLeaderParticipation(name, id string) (topo.LeaderParticipati
 		server:   s,
 		name:     name,
 		id:       id,
-		contents: fmt.Sprintf("Leader: %s", id),
+		contents: "Leader: " + id,
 		ctx:      ctx,
 		cancel:   cancel,
 	}
@@ -108,7 +109,7 @@ func (lp *MySQLLeaderParticipation) WaitForLeadership() (context.Context, error)
 	}
 	if currentLeader != "" && currentLeader != lp.id {
 		// Someone else is already the leader - fail fast like etcd does
-		return nil, topo.NewError(topo.NoNode, fmt.Sprintf("leadership already held by %s", currentLeader))
+		return nil, topo.NewError(topo.NoNode, "leadership already held by "+currentLeader)
 	}
 
 	// No current leader, but we couldn't acquire it immediately
@@ -185,7 +186,7 @@ func (lp *MySQLLeaderParticipation) WaitForNewLeader(ctx context.Context) (<-cha
 		close(ch)
 		// Don't log warnings for interrupted contexts - this is expected during shutdown
 		if !topo.IsErrType(err, topo.NoNode) && !topo.IsErrType(err, topo.Interrupted) {
-			logWarningf("Failed to get initial leader: %v", err)
+			log.Warn("Failed to get initial leader", slog.Any("error", err))
 		}
 		return ch, nil
 	}
@@ -213,7 +214,7 @@ func (lp *MySQLLeaderParticipation) WaitForNewLeader(ctx context.Context) (<-cha
 				if err != nil {
 					// Don't log warnings for interrupted contexts - this is expected during shutdown
 					if !topo.IsErrType(err, topo.NoNode) && !topo.IsErrType(err, topo.Interrupted) {
-						logWarningf("Failed to get current leader: %v", err)
+						log.Warn("Failed to get current leader", slog.Any("error", err))
 					}
 					continue
 				}
@@ -250,22 +251,21 @@ func (lp *MySQLLeaderParticipation) tryBecomeLeader() bool {
 	result, err := lp.server.db.ExecContext(lp.ctx,
 		"INSERT IGNORE INTO topo_elections (name, leader_id, contents, expires_at) VALUES (?, ?, ?, ?)",
 		lp.name, lp.id, lp.contents, expiresAt)
-
 	if err != nil {
-		logInfof("Failed to insert election record for %s (id: %s): %v", lp.name, lp.id, err)
+		log.Info("Failed to insert election record", slog.String("name", lp.name), slog.String("id", lp.id), slog.Any("error", err))
 		return false
 	}
 
 	// Check if the insert was successful by examining affected rows
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		logInfof("Failed to get affected rows for %s (id: %s): %v", lp.name, lp.id, err)
+		log.Info("Failed to get affected rows", slog.String("name", lp.name), slog.String("id", lp.id), slog.Any("error", err))
 		return false
 	}
 
 	if rowsAffected > 0 {
 		// Successfully became leader
-		logInfof("Became leader for %s (id: %s)", lp.name, lp.id)
+		log.Info("Became leader", slog.String("name", lp.name), slog.String("id", lp.id))
 		return true
 	}
 
@@ -278,11 +278,11 @@ func (lp *MySQLLeaderParticipation) tryBecomeLeader() bool {
 	if err == nil {
 		rowsAffected, _ := result.RowsAffected()
 		if rowsAffected > 0 {
-			logInfof("Renewed leadership for %s (id: %s)", lp.name, lp.id)
+			log.Info("Renewed leadership", slog.String("name", lp.name), slog.String("id", lp.id))
 			return true // We renewed our leadership
 		}
 	}
-	logInfof("Failed to obtain leadership for %s (id: %s): %v", lp.name, lp.id, err)
+	log.Info("Failed to obtain leadership", slog.String("name", lp.name), slog.String("id", lp.id), slog.Any("error", err))
 
 	return false
 }
@@ -320,18 +320,17 @@ func (lp *MySQLLeaderParticipation) renewLeadership() bool {
 	result, err := lp.server.db.ExecContext(lp.ctx,
 		"UPDATE topo_elections SET expires_at = ? WHERE name = ? AND leader_id = ?",
 		expiresAt, lp.name, lp.id)
-
 	if err != nil {
-		logInfof("Failed to obtain leadership for %s: %v", lp.name, err)
+		log.Info("Failed to obtain leadership", slog.String("name", lp.name), slog.Any("error", err))
 		return false
 	}
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		logWarningf("Could not determine leadership state for %s: %v", lp.name, err)
+		log.Warn("Could not determine leadership state", slog.String("name", lp.name), slog.Any("error", err))
 		return false
 	}
 	if rowsAffected == 0 {
-		logWarningf("Lost leadership for %s", lp.name)
+		log.Warn("Lost leadership", slog.String("name", lp.name))
 		return false
 	}
 	return true
@@ -354,6 +353,6 @@ func (lp *MySQLLeaderParticipation) loseLeadership() {
 			"DELETE FROM topo_elections WHERE name = ? AND leader_id = ?",
 			lp.name, lp.id)
 
-		logInfof("Lost leadership for %s", lp.name)
+		log.Info("Lost leadership", slog.String("name", lp.name))
 	}
 }

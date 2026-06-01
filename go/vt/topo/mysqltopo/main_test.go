@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"path"
 	"testing"
@@ -29,6 +30,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 
+	"vitess.io/vitess/go/vt/log"
 	vttestpb "vitess.io/vitess/go/vt/proto/vttest"
 	"vitess.io/vitess/go/vt/vttest"
 )
@@ -42,9 +44,9 @@ var (
 func TestMain(m *testing.M) {
 	if addr := os.Getenv("MYSQL_TEST_ADDR"); addr != "" {
 		mySQLTopoTestAddr = addr
-		logInfof("Using custom MySQL server address: %s", mySQLTopoTestAddr)
+		log.Info("Using custom MySQL server address", slog.String("addr", mySQLTopoTestAddr))
 	} else {
-		logInfof("No custom MySQL server address provided, attempting to set up test MySQL server")
+		log.Info("No custom MySQL server address provided, attempting to set up test MySQL server")
 
 		// Create a custom environment with a specific base port
 		// BasePort 13000 means MySQL will be on port 13002 (BasePort + 2)
@@ -79,11 +81,12 @@ func TestMain(m *testing.M) {
 		user := "topo"
 		pass := "topopass"
 		mySQLTopoTestAddr = fmt.Sprintf("%s:%s@tcp(%s:%d)/", user, pass, host, mysqlPort)
-		logInfof("Started test MySQL server at: %s (port: %d, user: %s)", mySQLTopoTestAddr, mysqlPort, user)
+		log.Info("Started test MySQL server", slog.String("addr", mySQLTopoTestAddr), slog.Int("port", mysqlPort), slog.String("user", user))
 	}
 
 	// Run the tests
-	goleak.VerifyTestMain(m,
+	goleak.VerifyTestMain(
+		m,
 		// Ignore global background goroutines from third-party libraries that are started
 		// during package initialization and run for the lifetime of the process.
 		// These are not leaks - they are expected singleton workers.
@@ -100,7 +103,7 @@ func TestMain(m *testing.M) {
 
 	// Clean up the global MySQL server if it was created
 	if testMySQLServer != nil {
-		logInfof("Tearing down test MySQL server")
+		log.Info("Tearing down test MySQL server")
 		testMySQLServer.TearDown()
 	}
 }
@@ -109,7 +112,7 @@ func TestMain(m *testing.M) {
 func generateRandomSchemaName() string {
 	bytes := make([]byte, 8)
 	rand.Read(bytes)
-	return fmt.Sprintf("vitess_topo_test_%s", hex.EncodeToString(bytes))
+	return "vitess_topo_test_" + hex.EncodeToString(bytes)
 }
 
 // createTestServer creates a test server with a specified schema name

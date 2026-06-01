@@ -198,7 +198,7 @@ func TestConcurrentElections(t *testing.T) {
 	for electionIdx := 0; electionIdx < numElections; electionIdx++ {
 		electionName := fmt.Sprintf("concurrent-election-%d", electionIdx)
 
-		for participantIdx := 0; participantIdx < numParticipantsPerElection; participantIdx++ {
+		for participantIdx := range numParticipantsPerElection {
 			participantID := fmt.Sprintf("election-%d-participant-%d", electionIdx, participantIdx)
 			lp, err := server.NewLeaderParticipation(electionName, participantID)
 			require.NoError(t, err)
@@ -243,7 +243,7 @@ func TestConcurrentElections(t *testing.T) {
 		}
 	}
 
-	for electionIdx := 0; electionIdx < numElections; electionIdx++ {
+	for electionIdx := range numElections {
 		leaderCount := leadersByElection[electionIdx]
 		require.Equal(t, 1, leaderCount, "Election %d has %d leaders, want exactly 1", electionIdx, leaderCount)
 	}

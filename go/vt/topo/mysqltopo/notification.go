@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ import (
 	"vitess.io/vitess/go/mysql/replication"
 	"vitess.io/vitess/go/vt/binlog"
 	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/log"
 	"vitess.io/vitess/go/vt/topo"
 )
 
@@ -113,10 +115,10 @@ func getNotificationSystem(schemaName, serverAddr string) (*notificationSystem, 
 
 	if ns, exists := notificationSystems[key]; exists {
 		if ns.dead.Load() {
-			logWarningf("MySQL topo notification system for schema %s is dead, watches will not receive updates", schemaName)
+			log.Warn("MySQL topo notification system is dead, watches will not receive updates", slog.String("schema", schemaName))
 		}
 		ns.refCount.Add(1)
-		logInfof("MySQL topo notification system for schema %s: refcount incremented to %d", schemaName, ns.refCount.Load())
+		log.Info("MySQL topo notification system: refcount incremented", slog.String("schema", schemaName), slog.Int("refcount", int(ns.refCount.Load())))
 		return ns, nil
 	}
 
@@ -140,9 +142,9 @@ func releaseNotificationSystem(schemaName string) {
 
 	if ns, exists := notificationSystems[key]; exists {
 		newCount := ns.refCount.Add(-1)
-		logInfof("MySQL topo notification system for schema %s: refcount decremented to %d", schemaName, newCount)
+		log.Info("MySQL topo notification system: refcount decremented", slog.String("schema", schemaName), slog.Int("refcount", int(newCount)))
 		if newCount <= 0 {
-			logInfof("MySQL topo notification system for schema %s: refcount reached zero, closing", schemaName)
+			log.Info("MySQL topo notification system: refcount reached zero, closing", slog.String("schema", schemaName))
 			ns.close()
 			delete(notificationSystems, key)
 		}
@@ -152,19 +154,19 @@ func releaseNotificationSystem(schemaName string) {
 // newNotificationSystem creates a new notification system.
 func newNotificationSystem(schemaName, serverAddr string) (*notificationSystem, error) {
 	// Create database connection for queries
-	logInfof("newNotificationSystem: serverAddr=%s, schemaName=%s", serverAddr, schemaName)
+	log.Info("newNotificationSystem", slog.String("serverAddr", serverAddr), slog.String("schema", schemaName))
 	cfg, err := mysqldriver.ParseDSN(serverAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse MySQL DSN: %v", err)
 	}
-	logInfof("newNotificationSystem: parsed DSN - User=%s, Addr=%s, DBName=%s", cfg.User, cfg.Addr, cfg.DBName)
+	log.Info("newNotificationSystem: parsed DSN", slog.String("user", cfg.User), slog.String("addr", cfg.Addr), slog.String("db_name", cfg.DBName))
 	if cfg.DBName == "" {
 		cfg.DBName = schemaName
 	}
 
 	// If connecting to RDS/Aurora, configure TLS
 	if isRDSHost(cfg.Addr) {
-		logInfof("newNotificationSystem: detected RDS/Aurora host, enabling TLS")
+		log.Info("newNotificationSystem: detected RDS/Aurora host, enabling TLS")
 		if err := initRDSTLS(); err != nil {
 			return nil, fmt.Errorf("failed to initialize RDS TLS: %v", err)
 		}
@@ -220,7 +222,7 @@ func newNotificationSystem(schemaName, serverAddr string) (*notificationSystem, 
 
 	// If connecting to RDS/Aurora, configure TLS for binlog connection
 	if isRDSHost(cfg.Addr) {
-		logInfof("newNotificationSystem: configuring TLS for binlog connection to RDS/Aurora")
+		log.Info("newNotificationSystem: configuring TLS for binlog connection to RDS/Aurora")
 		// For binlog connections, we need to use required mode
 		// The RDS CA bundle has already been registered via initRDSTLS()
 		// and the binlog library will use it automatically
@@ -299,7 +301,7 @@ func (ns *notificationSystem) initializeKnownKeys() error {
 		var version int64
 
 		if err := rows.Scan(&path, &version); err != nil {
-			logWarningf("Failed to scan topo_data row during initialization: %v", err)
+			log.Warn("Failed to scan topo_data row during initialization", slog.Any("error", err))
 			continue
 		}
 
@@ -322,7 +324,7 @@ func (ns *notificationSystem) run() {
 		}
 	}()
 
-	logInfof("Starting MySQL notification system for schema %s", ns.schemaName)
+	log.Info("Starting MySQL notification system", slog.String("schema", ns.schemaName))
 
 	const (
 		maxRetries     = 5
@@ -334,7 +336,7 @@ func (ns *notificationSystem) run() {
 
 	for {
 		if ns.ctx.Err() != nil {
-			logInfof("Context cancelled, stopping MySQL notification system for schema %s", ns.schemaName)
+			log.Info("Context cancelled, stopping MySQL notification system", slog.String("schema", ns.schemaName))
 			return
 		}
 
@@ -352,7 +354,7 @@ func (ns *notificationSystem) run() {
 
 			retryCount++
 			if retryCount > maxRetries {
-				logErrorf("MySQL topo notification system for schema %s is now dead after %d retries: %v. Watches will no longer receive updates.", ns.schemaName, maxRetries, err)
+				log.Error("MySQL topo notification system is now dead. Watches will no longer receive updates.", slog.String("schema", ns.schemaName), slog.Int("retries", maxRetries), slog.Any("error", err))
 				ns.dead.Store(true)
 				return
 			}
@@ -360,7 +362,7 @@ func (ns *notificationSystem) run() {
 			// Calculate exponential backoff delay
 			delay := min(time.Duration(1<<uint(retryCount-1))*baseRetryDelay, maxRetryDelay)
 
-			logWarningf("Failed to create binlog connection (attempt %d/%d): %v, retrying in %v", retryCount, maxRetries, err, delay)
+			log.Warn("Failed to create binlog connection, retrying", slog.Int("attempt", retryCount), slog.Int("max_retries", maxRetries), slog.Any("error", err), slog.Duration("delay", delay))
 
 			select {
 			case <-ns.ctx.Done():
@@ -380,10 +382,10 @@ func (ns *notificationSystem) run() {
 		var errChan <-chan error
 
 		if !currentPosition.IsZero() {
-			logInfof("Restarting binlog dump from position %v (retry %d/%d)", currentPosition, retryCount, maxRetries)
+			log.Info("Restarting binlog dump", slog.Any("position", currentPosition), slog.Int("retry", retryCount), slog.Int("max_retries", maxRetries))
 			eventChan, errChan, err = ns.binlogConn.StartBinlogDumpFromPosition(ns.ctx, "", currentPosition)
 		} else {
-			logInfof("Starting binlog dump from current position")
+			log.Info("Starting binlog dump from current position")
 			var startPosition replication.Position
 			startPosition, eventChan, errChan, err = ns.binlogConn.StartBinlogDumpFromCurrent(ns.ctx)
 			if err == nil {
@@ -401,14 +403,14 @@ func (ns *notificationSystem) run() {
 
 			retryCount++
 			if retryCount > maxRetries {
-				logErrorf("Failed to start binlog dump after %d retries: %v", maxRetries, err)
+				log.Error("Failed to start binlog dump", slog.Int("retries", maxRetries), slog.Any("error", err))
 				return
 			}
 
 			// Calculate exponential backoff delay
 			delay := min(time.Duration(1<<uint(retryCount-1))*baseRetryDelay, maxRetryDelay)
 
-			logWarningf("Failed to start binlog dump (attempt %d/%d): %v, retrying in %v", retryCount, maxRetries, err, delay)
+			log.Warn("Failed to start binlog dump, retrying", slog.Int("attempt", retryCount), slog.Int("max_retries", maxRetries), slog.Any("error", err), slog.Duration("delay", delay))
 
 			select {
 			case <-ns.ctx.Done():
@@ -434,13 +436,13 @@ func (ns *notificationSystem) run() {
 			// We don't have to check what kind of error it is,
 			// we can just continue which will restart the for loop and connect to the
 			// last saved position.
-			logWarningf("Error processing binlog event stream: %v", err)
+			log.Warn("Error processing binlog event stream", slog.Any("error", err))
 			continue
 		}
 
 		// If we reach here, the event stream ended normally
 		// This is triggered by closing the channel eventChan
-		logInfof("Binlog event stream ended normally")
+		log.Info("Binlog event stream ended normally")
 		return
 	}
 }
@@ -470,7 +472,7 @@ func (ns *notificationSystem) processEventStream(eventChan <-chan mysql.BinlogEv
 			if !ns.format.IsZero() && ev.IsGTID() {
 				gtidEvent, _, _, _, err := ev.GTID(ns.format)
 				if err != nil {
-					logWarningf("MySQL topo: failed to extract GTID from binlog event: %v", err)
+					log.Warn("MySQL topo: failed to extract GTID from binlog event", slog.Any("error", err))
 				} else {
 					ns.lastPositionMu.Lock()
 					if ns.lastPosition.GTIDSet != nil {
@@ -606,7 +608,7 @@ func (ns *notificationSystem) checkForTopoDataChanges() error {
 	for path, entry := range currentData {
 		if knownVersion, exists := ns.knownKeys[path]; !exists || knownVersion != entry.version {
 			// This is a new or updated entry
-			logInfof("MySQL topo: detected change for path %s (version %d)", path, entry.version)
+			log.Info("MySQL topo: detected change", slog.String("path", path), slog.Int64("version", entry.version))
 			ns.knownKeys[path] = entry.version
 			// Notify watchers of the change
 			ns.notifyChange(path, entry.data, MySQLVersion(entry.version))
@@ -617,7 +619,7 @@ func (ns *notificationSystem) checkForTopoDataChanges() error {
 	for path := range ns.knownKeys {
 		if _, exists := currentData[path]; !exists {
 			// This entry was deleted
-			logInfof("MySQL topo: detected deletion for path %s", path)
+			log.Info("MySQL topo: detected deletion", slog.String("path", path))
 			delete(ns.knownKeys, path)
 			// Notify watchers of the deletion
 			ns.notifyDeletion(path)
@@ -691,7 +693,7 @@ func (ns *notificationSystem) notifyChange(path string, data []byte, version top
 			case w.changes <- watchData:
 			case <-w.ctx.Done():
 			case <-time.After(5 * time.Second):
-				logWarningf("MySQL topo: slow consumer for watch on %s, notification dropped", path)
+				log.Warn("MySQL topo: slow consumer for watch, notification dropped", slog.String("path", path))
 			}
 		}
 	}
@@ -712,7 +714,7 @@ func (ns *notificationSystem) notifyChange(path string, data []byte, version top
 				case w.changes <- watchData:
 				case <-w.ctx.Done():
 				case <-time.After(5 * time.Second):
-					logWarningf("MySQL topo: slow consumer for recursive watch on prefix %s (path %s), notification dropped", prefix, path)
+					log.Warn("MySQL topo: slow consumer for recursive watch, notification dropped", slog.String("prefix", prefix), slog.String("path", path))
 				}
 			}
 		}
@@ -738,7 +740,7 @@ func (ns *notificationSystem) notifyDeletion(path string) {
 				w.cancel()
 			case <-w.ctx.Done():
 			case <-time.After(5 * time.Second):
-				logWarningf("MySQL topo: slow consumer for deletion watch on %s, notification dropped", path)
+				log.Warn("MySQL topo: slow consumer for deletion watch, notification dropped", slog.String("path", path))
 			}
 		}
 	}
@@ -758,7 +760,7 @@ func (ns *notificationSystem) notifyDeletion(path string) {
 				case w.changes <- watchData:
 				case <-w.ctx.Done():
 				case <-time.After(5 * time.Second):
-					logWarningf("MySQL topo: slow consumer for recursive deletion watch on prefix %s (path %s), notification dropped", prefix, path)
+					log.Warn("MySQL topo: slow consumer for recursive deletion watch, notification dropped", slog.String("prefix", prefix), slog.String("path", path))
 				}
 			}
 		}
@@ -841,7 +843,7 @@ func checkMySQLSettings(db *sql.DB) error {
 	}
 
 	if logBin != "1" && logBin != "ON" {
-		return fmt.Errorf("binary logging is disabled but is required for MySQL topo server. Please set log_bin=ON in your MySQL configuration")
+		return errors.New("binary logging is disabled but is required for MySQL topo server. Please set log_bin=ON in your MySQL configuration")
 	}
 
 	// Check that the binlog format is row.

@@ -794,7 +794,7 @@ func TestNotificationSystemReconnection(t *testing.T) {
 
 		// Verify the system is still working by updating the file
 		// syncronously.
-		updateData := []byte(fmt.Sprintf("updated data after reconnection %d", i+1))
+		updateData := fmt.Appendf(nil, "updated data after reconnection %d", i+1)
 		newVersion, err := server.Update(t.Context(), testPath, updateData, version)
 		require.NoError(t, err, "Should be able to update file after reconnection")
 		version = newVersion // Update the version for the next iteration
@@ -809,7 +809,6 @@ func TestNotificationSystemReconnection(t *testing.T) {
 			t.Error("no notification received")
 		}
 	}
-
 }
 
 func killBinlogConnection(t *testing.T, monitorDB *sql.DB, schemaName string) (bool, error) {

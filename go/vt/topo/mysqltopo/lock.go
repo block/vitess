@@ -19,8 +19,10 @@ package mysqltopo
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"time"
 
+	"vitess.io/vitess/go/vt/log"
 	"vitess.io/vitess/go/vt/topo"
 )
 
@@ -161,7 +163,6 @@ func (s *Server) acquireLock(ctx context.Context, path, contents string, ttl tim
 		result, err := s.db.ExecContext(ctx,
 			"INSERT IGNORE INTO topo_locks (path, contents, expires_at) VALUES (?, ?, ?)",
 			path, contents, expiresAt)
-
 		if err != nil {
 			// Unexpected error (not duplicate key related)
 			return nil, convertError(err, path)
@@ -224,9 +225,8 @@ func (ld *MySQLLockDescriptor) heartbeat() {
 			_, err := ld.server.db.ExecContext(ld.ctx,
 				"UPDATE topo_locks SET expires_at = ? WHERE path = ?",
 				newExpiresAt, ld.path)
-
 			if err != nil {
-				logWarningf("Failed to refresh lock for path %s: %v", ld.path, err)
+				log.Warn("Failed to refresh lock", slog.String("path", ld.path), slog.Any("error", err))
 				// The lock may have been lost, but we'll let Check() handle detection
 			}
 		}
