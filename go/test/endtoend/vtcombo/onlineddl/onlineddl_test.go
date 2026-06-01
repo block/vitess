@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -105,7 +106,7 @@ func TestMain(m *testing.M) {
 		return m.Run(), nil
 	}()
 	if err != nil {
-		log.Errorf("top level error: %v\n", err)
+		log.Error("top level error", slog.Any("error", err))
 		os.Exit(1)
 	}
 	os.Exit(exitcode)
