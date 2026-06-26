@@ -63,7 +63,7 @@ import (
 
 const (
 	// DefaultSchema is the default database schema name for MySQL topo
-	DefaultSchema = "vitess_topo"
+	DefaultSchema = "topo"
 
 	// DefaultLockTTL is the default TTL for locks in seconds
 	DefaultLockTTL = 30
