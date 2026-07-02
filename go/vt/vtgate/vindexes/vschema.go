@@ -1472,7 +1472,10 @@ func (vschema *VSchema) FirstKeyspace() *Keyspace {
 		}
 	}
 	ks := vschema.Keyspaces[first]
-
+	if ks == nil {
+		// Empty vschema: there is no first keyspace.
+		return nil
+	}
 	return ks.Keyspace
 }
 

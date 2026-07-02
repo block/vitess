@@ -566,9 +566,19 @@ func (vc *VCursorImpl) getDualTable() (*vindexes.BaseTable, vindexes.Vindex, str
 	var ks *vindexes.Keyspace
 	if ksName == "" {
 		ks = vc.vschema.FirstKeyspace()
+		if ks == nil {
+			return nil, nil, "", 0, nil, errNoDbAvailable
+		}
 		ksName = ks.Name
 	} else {
-		ks = vc.vschema.Keyspaces[ksName].Keyspace
+		// The session's target keyspace is not validated against the vschema
+		// when it is set directly on the session (bypassing SetTarget), so it
+		// can name a keyspace that does not exist.
+		ksSchema, ok := vc.vschema.Keyspaces[ksName]
+		if !ok {
+			return nil, nil, "", 0, nil, vterrors.VT05003(ksName)
+		}
+		ks = ksSchema.Keyspace
 	}
 	tbl := &vindexes.BaseTable{
 		Name:     sqlparser.NewIdentifierCS("dual"),

@@ -435,3 +435,29 @@ func (f fakeObserver) Observe(*sqltypes.Result) {
 }
 
 var _ ResultsObserver = (*fakeObserver)(nil)
+
+// TestGetDualTableUnknownKeyspace tests that resolving the dual table for a
+// session whose target keyspace is not in the vschema returns an error. The
+// target can bypass SetTarget validation when it is written directly to the
+// session (as MySQL-protocol proxies do for COM_INIT_DB), and this used to
+// nil-pointer panic instead of erroring.
+func TestGetDualTableUnknownKeyspace(t *testing.T) {
+	session := NewSafeSession(&vtgatepb.Session{TargetString: "no_such_ks"})
+	vc, err := NewVCursorImpl(session, sqlparser.MarginComments{}, nil, nil, &fakeVSchemaOperator{vschema: vschemaWith2KS}, vschemaWith2KS, srvtopo.NewResolver(&FakeTopoServer{}, nil, ""), nil, fakeObserver{}, VCursorConfig{}, nil)
+	require.NoError(t, err)
+
+	_, _, _, _, _, err = vc.FindTableOrVindex(sqlparser.TableName{Name: sqlparser.NewIdentifierCS("dual")})
+	require.ErrorContains(t, err, "unknown database 'no_such_ks' in vschema")
+}
+
+// TestGetDualTableEmptyVSchema tests that resolving the dual table against a
+// vschema with no keyspaces returns an error rather than panicking in
+// FirstKeyspace.
+func TestGetDualTableEmptyVSchema(t *testing.T) {
+	emptyVSchema := &vindexes.VSchema{Keyspaces: map[string]*vindexes.KeyspaceSchema{}}
+	vc, err := NewVCursorImpl(NewSafeSession(nil), sqlparser.MarginComments{}, nil, nil, &fakeVSchemaOperator{vschema: emptyVSchema}, emptyVSchema, srvtopo.NewResolver(&FakeTopoServer{}, nil, ""), nil, fakeObserver{}, VCursorConfig{}, nil)
+	require.NoError(t, err)
+
+	_, _, _, _, _, err = vc.FindTableOrVindex(sqlparser.TableName{Name: sqlparser.NewIdentifierCS("dual")})
+	require.ErrorContains(t, err, "no database available")
+}
