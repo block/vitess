@@ -59,8 +59,15 @@ func (s *Server) Watch(ctx context.Context, filePath string) (current *topo.Watc
 		cancel:  cancel,
 	}
 
-	// Add to notification system
-	ns.addWatcher(w)
+	// Add to notification system. Registration is refused if the system
+	// died between getNotificationSystemForServer and here — its
+	// cancellation sweep has already run, so a watcher added now would
+	// starve forever. Fail fast: the caller's retry goes back through
+	// getNotificationSystemForServer, which replaces a dead system.
+	if !ns.addWatcher(w) {
+		cancel()
+		return nil, nil, fmt.Errorf("failed to initialize watch for %s: notification system is dead; retry to get a fresh one", fullPath)
+	}
 	log.Info("MySQL topo: registered watch", slog.String("path", fullPath))
 
 	// Get the current value
@@ -132,8 +139,12 @@ func (s *Server) WatchRecursive(ctx context.Context, pathPrefix string) ([]*topo
 		cancel:     cancel,
 	}
 
-	// Add to notification system
-	ns.addRecursiveWatcher(w)
+	// Add to notification system. See Watch for why a refused registration
+	// (dead system) must fail fast instead of silently starving.
+	if !ns.addRecursiveWatcher(w) {
+		cancel()
+		return nil, nil, fmt.Errorf("failed to initialize recursive watch for %s: notification system is dead; retry to get a fresh one", fullPathPrefix)
+	}
 	log.Info("MySQL topo: registered recursive watch", slog.String("prefix", fullPathPrefix))
 
 	// Get current values

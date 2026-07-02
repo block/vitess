@@ -695,15 +695,24 @@ func (ns *notificationSystem) checkForTopoDataChanges() error {
 	return nil
 }
 
-// addWatcher adds a new file watcher.
-func (ns *notificationSystem) addWatcher(w *watcher) {
+// addWatcher adds a new file watcher. It returns false if the notification
+// system is dead or closed: no more events will ever be delivered and the
+// cancellation sweep (markDead/close) has already run, so a watcher added
+// now would silently starve forever. dead is set and checked under
+// watchersMu, so a watcher is either registered before the sweep (and
+// cancelled by it) or refused here — there is no in-between.
+func (ns *notificationSystem) addWatcher(w *watcher) bool {
 	ns.watchersMu.Lock()
 	defer ns.watchersMu.Unlock()
 
+	if ns.dead.Load() {
+		return false
+	}
 	if ns.watchers[w.path] == nil {
 		ns.watchers[w.path] = make(map[*watcher]bool)
 	}
 	ns.watchers[w.path][w] = true
+	return true
 }
 
 // removeWatcher removes a file watcher.
@@ -719,15 +728,21 @@ func (ns *notificationSystem) removeWatcher(w *watcher) {
 	}
 }
 
-// addRecursiveWatcher adds a new recursive watcher.
-func (ns *notificationSystem) addRecursiveWatcher(w *recursiveWatcher) {
+// addRecursiveWatcher adds a new recursive watcher. Like addWatcher, it
+// returns false when the notification system is dead or closed, refusing a
+// registration that could never receive events.
+func (ns *notificationSystem) addRecursiveWatcher(w *recursiveWatcher) bool {
 	ns.watchersMu.Lock()
 	defer ns.watchersMu.Unlock()
 
+	if ns.dead.Load() {
+		return false
+	}
 	if ns.recursiveWatchers[w.pathPrefix] == nil {
 		ns.recursiveWatchers[w.pathPrefix] = make(map[*recursiveWatcher]bool)
 	}
 	ns.recursiveWatchers[w.pathPrefix][w] = true
+	return true
 }
 
 // removeRecursiveWatcher removes a recursive watcher.
@@ -841,11 +856,16 @@ func (ns *notificationSystem) notifyDeletion(path string) {
 // of silently serving stale topology forever. The re-established watch gets
 // a fresh notification system via getNotificationSystem's dead-replacement
 // path. Called from run() itself, so it must not wait on ns.wg.
+//
+// dead is set while holding watchersMu — the same lock addWatcher checks it
+// under — so a concurrent Watch either registered before the sweep (and is
+// cancelled by it) or is refused by addWatcher after it. The maps are reset
+// to fresh empty maps, never nil, so a straggling registration attempt can
+// not panic on a nil map either.
 func (ns *notificationSystem) markDead() {
-	ns.dead.Store(true)
-
 	ns.watchersMu.Lock()
 	defer ns.watchersMu.Unlock()
+	ns.dead.Store(true)
 	for _, watchers := range ns.watchers {
 		for w := range watchers {
 			w.cancel()
@@ -856,18 +876,24 @@ func (ns *notificationSystem) markDead() {
 			w.cancel()
 		}
 	}
-	ns.watchers = nil
-	ns.recursiveWatchers = nil
+	ns.watchers = make(map[string]map[*watcher]bool)
+	ns.recursiveWatchers = make(map[string]map[*recursiveWatcher]bool)
 }
 
 // close shuts down the notification system. Idempotent: a dead system is
 // closed when it is replaced in getNotificationSystem, and possibly again
 // when its last reference is released.
+//
+// Like markDead, it flags the system dead under watchersMu and leaves the
+// maps as fresh empty maps: an in-flight Watch that grabbed this pointer
+// just before close is refused by addWatcher (no silent starvation) rather
+// than panicking on a nil map or registering on a corpse.
 func (ns *notificationSystem) close() {
 	ns.closeOnce.Do(func() {
 		ns.cancel()
 
 		ns.watchersMu.Lock()
+		ns.dead.Store(true)
 		// Cancel all watchers
 		for _, watchers := range ns.watchers {
 			for w := range watchers {
@@ -881,8 +907,8 @@ func (ns *notificationSystem) close() {
 			}
 		}
 
-		ns.watchers = nil
-		ns.recursiveWatchers = nil
+		ns.watchers = make(map[string]map[*watcher]bool)
+		ns.recursiveWatchers = make(map[string]map[*recursiveWatcher]bool)
 		ns.watchersMu.Unlock()
 
 		ns.wg.Wait()
