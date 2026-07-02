@@ -147,7 +147,7 @@ func TestUnconditionalUpdateVersionsAreDistinct(t *testing.T) {
 	versions := make(chan int64, writers)
 	errs := make(chan error, writers)
 	start := make(chan struct{})
-	for i := 0; i < writers; i++ {
+	for i := range writers {
 		go func(i int) {
 			<-start
 			v, err := server.Update(ctx, "vfile", []byte{byte('a' + i)}, nil)
@@ -161,7 +161,7 @@ func TestUnconditionalUpdateVersionsAreDistinct(t *testing.T) {
 	close(start)
 
 	seen := make(map[int64]bool)
-	for i := 0; i < writers; i++ {
+	for range writers {
 		select {
 		case err := <-errs:
 			t.Fatalf("unconditional update failed: %v", err)
