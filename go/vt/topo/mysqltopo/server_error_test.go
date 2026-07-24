@@ -119,7 +119,7 @@ func TestCreateConcurrentNodeExists(t *testing.T) {
 	errs := make(chan error, workers)
 	var start sync.WaitGroup
 	start.Add(1)
-	for i := 0; i < workers; i++ {
+	for range workers {
 		go func() {
 			start.Wait()
 			_, err := server.Create(ctx, "concurrent/create/race", []byte("contents"))
@@ -129,7 +129,7 @@ func TestCreateConcurrentNodeExists(t *testing.T) {
 	start.Done()
 
 	var created, exists int
-	for i := 0; i < workers; i++ {
+	for range workers {
 		err := <-errs
 		switch {
 		case err == nil:
