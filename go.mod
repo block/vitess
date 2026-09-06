@@ -121,7 +121,7 @@ require (
 )
 
 require (
-	filippo.io/edwards25519 v1.1.1 // indirect
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/DataDog/datadog-agent/comp/core/tagger/origindetection v0.77.3 // indirect
 	github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/otlp/attributes v0.77.3 // indirect
 	github.com/DataDog/datadog-agent/pkg/proto v0.77.3 // indirect
@@ -139,6 +139,7 @@ require (
 	github.com/DataDog/go-runtime-metrics-internal v0.0.4-0.20260217080614-b0f4edc38a6d // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.0.9 // indirect
 	github.com/bitfield/gotestdox v0.2.2 // indirect
+	github.com/block/mysql v0.0.0-20260906185715-6346a1ec80d2 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cihub/seelog v0.0.0-20170130134532-f561c5e57575 // indirect
 	github.com/cilium/ebpf v0.21.0 // indirect

@@ -51,7 +51,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
+	// Block's fork of go-sql-driver/mysql, registered as "block-mysql". strata
+	// links the fork for capabilities upstream does not carry; using it here
+	// too keeps one driver — and so one *mysql.MySQLError type — in the binary,
+	// which is what convertError below depends on.
+	"github.com/block/mysql"
 	"github.com/spf13/pflag"
 
 	"vitess.io/vitess/go/mysql/sqlerror"
@@ -269,7 +273,7 @@ func connect(cfg *mysql.Config) (*sql.DB, error) {
 		cfg.TLSConfig = "rds-topo"
 	}
 
-	db, err := sql.Open("mysql", cfg.FormatDSN())
+	db, err := sql.Open("block-mysql", cfg.FormatDSN())
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MySQL topo at %s (schema %q, user %q): %v", cfg.Addr, cfg.DBName, cfg.User, err)
 	}
