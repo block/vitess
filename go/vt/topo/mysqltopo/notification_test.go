@@ -765,7 +765,7 @@ func TestNotificationSystemReconnection(t *testing.T) {
 	require.Equal(t, initialData, current.Contents)
 
 	// Create a separate connection to monitor and kill connections
-	monitorDB, err := sql.Open("block-mysql", mySQLTopoTestAddr)
+	monitorDB, err := sql.Open(driverName, mySQLTopoTestAddr)
 	require.NoError(t, err)
 	defer monitorDB.Close()
 

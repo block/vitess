@@ -209,7 +209,7 @@ func newNotificationSystem(schemaName, serverAddr string) (*notificationSystem, 
 		cfg.TLSConfig = "rds-topo"
 	}
 
-	db, err := sql.Open("block-mysql", cfg.FormatDSN())
+	db, err := sql.Open(driverName, cfg.FormatDSN())
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MySQL: %v", err)
 	}

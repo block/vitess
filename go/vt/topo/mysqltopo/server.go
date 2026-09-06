@@ -52,9 +52,12 @@ import (
 	"time"
 
 	// Block's fork of go-sql-driver/mysql, registered as "block-mysql". strata
-	// links the fork for capabilities upstream does not carry; using it here
-	// too keeps one driver — and so one *mysql.MySQLError type — in the binary,
-	// which is what convertError below depends on.
+	// links the fork for capabilities upstream does not carry; this package
+	// follows so that every *sql.DB it opens is served by the same driver whose
+	// *mysql.MySQLError type convertError below asserts on. That is a statement
+	// about this package, not about the binary: elsewhere in the repo, end-to-end
+	// tests still import upstream, and an error crossing from one of those would
+	// not match the assertion.
 	"github.com/block/mysql"
 	"github.com/spf13/pflag"
 
@@ -66,6 +69,13 @@ import (
 )
 
 const (
+	// driverName is the database/sql driver every connection in this package is
+	// opened with. It has to be block/mysql's registered name and not upstream's
+	// "mysql": convertError asserts on block/mysql's *mysql.MySQLError, and a
+	// *sql.DB opened with a different driver would return a type that assertion
+	// silently misses.
+	driverName = "block-mysql"
+
 	// DefaultSchema is the default database schema name for MySQL topo
 	DefaultSchema = "topo"
 
@@ -273,7 +283,7 @@ func connect(cfg *mysql.Config) (*sql.DB, error) {
 		cfg.TLSConfig = "rds-topo"
 	}
 
-	db, err := sql.Open("block-mysql", cfg.FormatDSN())
+	db, err := sql.Open(driverName, cfg.FormatDSN())
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MySQL topo at %s (schema %q, user %q): %v", cfg.Addr, cfg.DBName, cfg.User, err)
 	}
@@ -543,7 +553,7 @@ func convertError(err error, path string) error {
 		return topo.NewError(topo.NoNode, path)
 	}
 
-	// Handle MySQL-specific errors. go-sql-driver returns *mysql.MySQLError,
+	// Handle MySQL-specific errors. block-mysql returns *mysql.MySQLError,
 	// which carries the server error number directly; its message format
 	// ("Error 1062 (23000): ...") is not recognized by
 	// sqlerror.NewSQLErrorFromError, so check the typed error first and only

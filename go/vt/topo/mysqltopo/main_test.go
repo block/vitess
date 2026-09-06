@@ -125,7 +125,7 @@ func createTestServer(t *testing.T, schemaName string) (*Server, string, func())
 		schemaName = generateRandomSchemaName()
 	}
 	cfg.DBName = "" // to create schema
-	baseDB, err := sql.Open("block-mysql", cfg.FormatDSN())
+	baseDB, err := sql.Open(driverName, cfg.FormatDSN())
 	require.NoError(t, err)
 
 	_, err = baseDB.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", schemaName))
