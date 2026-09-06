@@ -26,7 +26,7 @@ import (
 	"path"
 	"testing"
 
-	"github.com/go-sql-driver/mysql"
+	"github.com/block/mysql"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 
@@ -125,7 +125,7 @@ func createTestServer(t *testing.T, schemaName string) (*Server, string, func())
 		schemaName = generateRandomSchemaName()
 	}
 	cfg.DBName = "" // to create schema
-	baseDB, err := sql.Open("mysql", cfg.FormatDSN())
+	baseDB, err := sql.Open(driverName, cfg.FormatDSN())
 	require.NoError(t, err)
 
 	_, err = baseDB.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", schemaName))

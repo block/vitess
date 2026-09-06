@@ -95,6 +95,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager v0.1.15
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.99.0
 	github.com/aws/smithy-go v1.24.3
+	github.com/block/mysql v0.0.0-20260906201522-a3178f8dca69
 	github.com/bndr/gotabulate v1.1.2
 	github.com/brianvoe/gofakeit/v7 v7.14.1
 	github.com/dustin/go-humanize v1.0.1
@@ -121,7 +122,7 @@ require (
 )
 
 require (
-	filippo.io/edwards25519 v1.1.1 // indirect
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/DataDog/datadog-agent/comp/core/tagger/origindetection v0.77.3 // indirect
 	github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/otlp/attributes v0.77.3 // indirect
 	github.com/DataDog/datadog-agent/pkg/proto v0.77.3 // indirect

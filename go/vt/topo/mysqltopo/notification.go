@@ -29,7 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	mysqldriver "github.com/go-sql-driver/mysql"
+	mysqldriver "github.com/block/mysql"
 
 	"vitess.io/vitess/go/mysql"
 	"vitess.io/vitess/go/mysql/replication"
@@ -209,7 +209,7 @@ func newNotificationSystem(schemaName, serverAddr string) (*notificationSystem, 
 		cfg.TLSConfig = "rds-topo"
 	}
 
-	db, err := sql.Open("mysql", cfg.FormatDSN())
+	db, err := sql.Open(driverName, cfg.FormatDSN())
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MySQL: %v", err)
 	}
@@ -236,7 +236,7 @@ func newNotificationSystem(schemaName, serverAddr string) (*notificationSystem, 
 	// Create connection parameters for binlog streaming
 	cfg.DBName = schemaName
 
-	// Parse host and port from cfg.Addr. The go-sql-driver/mysql DSN allows
+	// Parse host and port from cfg.Addr. The driver's DSN format allows
 	// addresses without a port (e.g. `tcp(localhost)/db`); fall back to the
 	// default MySQL port in that case.
 	host, portStr, err := net.SplitHostPort(cfg.Addr)

@@ -22,7 +22,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/go-sql-driver/mysql"
+	"github.com/block/mysql"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,7 +36,7 @@ func newRawSchema(t *testing.T) (baseDB *sql.DB, schemaDSN, schemaName string, c
 
 	schemaName = generateRandomSchemaName()
 	cfg.DBName = ""
-	baseDB, err = sql.Open("mysql", cfg.FormatDSN())
+	baseDB, err = sql.Open(driverName, cfg.FormatDSN())
 	require.NoError(t, err)
 	_, err = baseDB.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", schemaName))
 	require.NoError(t, err)
