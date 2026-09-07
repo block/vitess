@@ -262,6 +262,16 @@ func newNotificationSystem(schemaName, serverAddr string) (*notificationSystem, 
 	// database/sql connection, so the driver never sees it. "required" encrypts
 	// without verifying the server's identity, which is what it did before the
 	// driver took over the database/sql side too — no CA is involved here.
+	//
+	// KNOWN GAP, not a settled design. The two connections to the same host now
+	// disagree about identity: the query connection gets verified roots, a
+	// ServerName and MinVersion TLS1.2 from the driver, while this one — which
+	// carries the topology change feed, every topo write as it happens —
+	// authenticates nothing. ConnParams can express the fix (SslMode
+	// vttls.VerifyIdentity plus SslCa); what it needs is a CA bundle on disk,
+	// which is exactly the file retiring the local wiring deleted. Closing it
+	// means giving this package a way to be handed a trust store, so it is a
+	// follow-up rather than something to bolt on here.
 	if isRDSHost(cfg.Addr) {
 		log.Info("newNotificationSystem: configuring TLS for binlog connection to RDS/Aurora")
 		connParams.SslMode = "required"

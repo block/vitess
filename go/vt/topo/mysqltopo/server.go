@@ -173,11 +173,25 @@ func registerMySQLTopoFlags(fs *pflag.FlagSet) {
 // so is not covered by the driver.
 //
 // It answers for the commercial `aws` partition only, because that is the scope
-// of the bundle the driver verifies against. GovCloud and China now report
-// false where the regex this replaced said true — but only in principle: the
-// same predicate gated the database/sql TLS, and that bundle has never held a
-// root for either partition, so such a host failed the Ping in
-// newNotificationSystem long before the binlog connection was built.
+// of the bundle the driver verifies against. China was never matched — the
+// `.amazonaws.com.cn` suffix fell outside the regex this replaced too — but
+// GovCloud was, and its change of answer is a change of failure mode, not the
+// loss of one setting. Such a host used to be handed the commercial bundle,
+// fail verification, and take the Ping in newNotificationSystem down with it,
+// so the topo never opened at all. Now it gets no TLS: the Ping succeeds in the
+// clear, and the binlog connection below leaves SslMode unset, which
+// EffectiveSslMode() reports as "disabled". Loud refusal becomes silent
+// cleartext on both channels.
+//
+// No such deployment can exist today, precisely because the old refusal was
+// total. Nothing in this package requires TLS of anything, though, so there is
+// no fail-closed backstop to catch one either — unlike the strata counterpart,
+// where a credential-bearing GovCloud endpoint hits
+// ErrBackendCredentialRequiresTLS. And reaching either partition needs a trust
+// store this package has no way to accept: mysql.RDSTLSConfig() is a
+// commercial-only starting point, to be used by replacing or extending its
+// RootCAs with that partition's own roots, and with the registration gone there
+// is no longer a config name an operator could name in a DSN.
 func isRDSHost(host string) bool {
 	return mysql.IsRDSAddr(host)
 }
