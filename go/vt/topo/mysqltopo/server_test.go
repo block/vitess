@@ -372,3 +372,74 @@ func TestMySQLTopo(t *testing.T) {
 		return newServer()
 	}, []string{})
 }
+
+// TestIsRDSHost pins the one job isRDSHost has left.
+//
+// It is now purely a security gate: its only caller is the binlog SslMode
+// decision in newNotificationSystem, and that connection still works when the
+// gate answers wrongly — just unencrypted. Nothing else in the package would
+// notice. Before the driver took over the database/sql side, breaking this
+// predicate also broke that TLS, which any RDS deployment would have seen
+// immediately; that backstop is gone, so the coverage has to be explicit.
+//
+// Rows are in the host:port form because that is what the call site passes
+// (mysql.Config.Addr, never a bare hostname). A matcher anchored at end of
+// string would pass a hostname-only test and fail every real connection.
+//
+// The mixed true/false rows are the point: a table of only-true rows cannot
+// distinguish this function from `return true`.
+func TestIsRDSHost(t *testing.T) {
+	tests := []struct {
+		addr   string
+		want   bool
+		reason string
+	}{
+		{
+			addr:   "topo.cxyz.us-east-1.rds.amazonaws.com:3306",
+			want:   true,
+			reason: "commercial RDS instance endpoint",
+		},
+		{
+			addr:   "topo.cluster-cxyz.eu-west-1.rds.amazonaws.com:3306",
+			want:   true,
+			reason: "Aurora cluster endpoint",
+		},
+		{
+			addr: "TOPO.cxyz.us-east-1.RDS.amazonaws.com:3306",
+			want: true,
+			reason: "DNS is case-insensitive; the regex this replaced answered " +
+				"false here, so an uppercase host silently lost its binlog TLS",
+		},
+		{
+			addr: "topo.cxyz.us-gov-west-1.rds.amazonaws.com:3306",
+			want: false,
+			reason: "GovCloud: an ordinary .rds.amazonaws.com name that the " +
+				"commercial bundle holds no root for, so it takes a dedicated " +
+				"exclusion to answer false. This is the row a future widening " +
+				"of the matcher breaks — see the isRDSHost doc for why that " +
+				"direction is worse than it looks",
+		},
+		{
+			addr:   "topo.cxyz.rds.cn-north-1.amazonaws.com.cn:3306",
+			want:   false,
+			reason: "China: excluded by the .amazonaws.com.cn suffix itself",
+		},
+		{
+			addr: "localhost:3306",
+			want: false,
+			reason: "the address every test in this package connects to; if it " +
+				"matched, the suite would exercise the RDS path by accident",
+		},
+		{
+			addr:   "mysql.internal.example.com:3306",
+			want:   false,
+			reason: "self-hosted MySQL must not be handed an RDS trust store",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.addr, func(t *testing.T) {
+			require.Equal(t, tt.want, isRDSHost(tt.addr), tt.reason)
+		})
+	}
+}

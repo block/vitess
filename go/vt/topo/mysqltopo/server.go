@@ -37,15 +37,11 @@ package mysqltopo
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"database/sql"
-	_ "embed"
 	"errors"
 	"fmt"
 	"log/slog"
 	"path"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,16 +85,6 @@ const (
 var (
 	lockTTL     = DefaultLockTTL
 	electionTTL = DefaultElectionTTL
-
-	// rdsAddr matches Amazon RDS hostnames
-	rdsAddr = regexp.MustCompile(`\.rds\.amazonaws\.com(:\d+)?$`)
-
-	// rdsTLSOnce ensures we only register the RDS TLS config once
-	rdsTLSOnce sync.Once
-
-	// https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
-	//go:embed rdsGlobalBundle.pem
-	rdsGlobalBundle []byte
 )
 
 // Factory is the mysql topo.Factory implementation.
@@ -179,26 +165,35 @@ func registerMySQLTopoFlags(fs *pflag.FlagSet) {
 	utils.SetFlagIntVar(fs, &electionTTL, "topo-mysql-election-ttl", electionTTL, "election TTL in seconds for MySQL topo")
 }
 
-// isRDSHost returns true if the host is an Amazon RDS hostname
+// isRDSHost returns true if the host is an Amazon RDS hostname.
+//
+// The database/sql connections in this package no longer need this: block/mysql
+// gives an RDS address a verified TLS config by itself. It survives for the
+// binlog connector in notification.go, which is Vitess's own MySQL client and
+// so is not covered by the driver.
+//
+// It answers for the commercial `aws` partition only, because that is the scope
+// of the bundle the driver verifies against. China was never matched — the
+// `.amazonaws.com.cn` suffix fell outside the regex this replaced too — but
+// GovCloud was, and its change of answer is a change of failure mode, not the
+// loss of one setting. Such a host used to be handed the commercial bundle,
+// fail verification, and take the Ping in newNotificationSystem down with it,
+// so the topo never opened at all. Now it gets no TLS: the Ping succeeds in the
+// clear, and the binlog connection below leaves SslMode unset, which
+// EffectiveSslMode() reports as "disabled". Loud refusal becomes silent
+// cleartext on both channels.
+//
+// No such deployment can exist today, precisely because the old refusal was
+// total. Nothing in this package requires TLS of anything, though, so there is
+// no fail-closed backstop to catch one either — unlike the strata counterpart,
+// where a credential-bearing GovCloud endpoint hits
+// ErrBackendCredentialRequiresTLS. And reaching either partition needs a trust
+// store this package has no way to accept: mysql.RDSTLSConfig() is a
+// commercial-only starting point, to be used by replacing or extending its
+// RootCAs with that partition's own roots, and with the registration gone there
+// is no longer a config name an operator could name in a DSN.
 func isRDSHost(host string) bool {
-	return rdsAddr.MatchString(host)
-}
-
-// initRDSTLS registers the RDS TLS configuration with the MySQL driver
-func initRDSTLS() error {
-	var err error
-	rdsTLSOnce.Do(func() {
-		caCertPool := x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM(rdsGlobalBundle) {
-			err = errors.New("failed to append RDS CA certificates")
-			return
-		}
-		tlsConfig := &tls.Config{
-			RootCAs: caCertPool,
-		}
-		err = mysql.RegisterTLSConfig("rds-topo", tlsConfig)
-	})
-	return err
+	return mysql.IsRDSAddr(host)
 }
 
 // NewServer returns a new MySQL topo.Server for an already-initialized topology.
@@ -273,16 +268,12 @@ func NewServer(serverAddr, root string) (*Server, error) {
 	return server, nil
 }
 
-// connect opens and verifies a MySQL connection for the given config, applying
-// RDS TLS when the address is an RDS endpoint.
+// connect opens and verifies a MySQL connection for the given config.
+//
+// An RDS address gets verified TLS with no wiring here: block/mysql applies it
+// in Config.normalize when the DSN asked for nothing else, so the trust store
+// and the endpoint check live in the driver rather than in a copy per consumer.
 func connect(cfg *mysql.Config) (*sql.DB, error) {
-	if isRDSHost(cfg.Addr) {
-		if err := initRDSTLS(); err != nil {
-			return nil, fmt.Errorf("failed to initialize RDS TLS: %v", err)
-		}
-		cfg.TLSConfig = "rds-topo"
-	}
-
 	db, err := sql.Open(driverName, cfg.FormatDSN())
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MySQL topo at %s (schema %q, user %q): %v", cfg.Addr, cfg.DBName, cfg.User, err)
