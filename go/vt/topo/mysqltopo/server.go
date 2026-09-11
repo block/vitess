@@ -583,14 +583,35 @@ func cleanupExpiredData(db *sql.DB) {
 	}
 }
 
-// matchDirectory creates a LIKE pattern for prefix matching a directory.
-// It escapes special LIKE characters (_ and %) and appends % for prefix matching
-func matchDirectory(prefix string) string {
-	// Escape special LIKE characters
-	pattern := strings.ReplaceAll(prefix, "_", "\\_")
-	pattern = strings.ReplaceAll(pattern, "%", "\\%")
-	pattern += "%"
-	return pattern
+// matchPrefix creates a LIKE pattern that matches every path starting with
+// prefix, including prefix itself and any sibling whose name extends it
+// (/path/to/foot for /path/to/foo). This is what topo.Conn.List wants: it
+// takes a path prefix, not a directory.
+func matchPrefix(prefix string) string {
+	return escapeLike(prefix) + "%"
+}
+
+// matchDirectory creates a LIKE pattern that matches only the paths contained
+// in the directory at dirPath. The path separator before the wildcard is what
+// keeps prefix siblings out: without it, listing /path/to/foo also returns
+// /path/to/foot's nodes, and an existence probe for /path/to/foo is satisfied
+// by /path/to/foot.
+func matchDirectory(dirPath string) string {
+	trimmed := strings.TrimSuffix(dirPath, "/")
+	if trimmed == "" {
+		// Degenerate root: with a root of "" or "/", resolvePath leaves paths
+		// relative, so there is no separator to anchor on and every row is
+		// contained in this directory.
+		return "%"
+	}
+	return escapeLike(trimmed) + "/%"
+}
+
+// escapeLike escapes the characters that are special to LIKE (_ and %).
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, "_", "\\_")
+	s = strings.ReplaceAll(s, "%", "\\%")
+	return s
 }
 
 // checkMySQLConfiguration verifies that MySQL is configured correctly for binlog replication.
