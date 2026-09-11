@@ -228,7 +228,7 @@ func (s *Server) List(ctx context.Context, filePathPrefix string) ([]topo.KVInfo
 	}
 
 	fullPathPrefix := s.resolvePath(filePathPrefix)
-	rows, err := s.db.QueryContext(ctx, "SELECT path, data, version FROM topo_data WHERE path LIKE ?", matchDirectory(fullPathPrefix))
+	rows, err := s.db.QueryContext(ctx, "SELECT path, data, version FROM topo_data WHERE path LIKE ?", matchPrefix(fullPathPrefix))
 	if err != nil {
 		return nil, convertError(err, fullPathPrefix)
 	}
