@@ -173,3 +173,29 @@ func TestUnconditionalUpdateVersionsAreDistinct(t *testing.T) {
 		}
 	}
 }
+
+// TestLockRejectsPrefixSiblingPath verifies that the existence pre-check in
+// LockWithTTL and TryLock requires a node inside the directory being locked,
+// not merely a path that starts with it. With only keyspace "foobar" present,
+// locking "keyspaces/foo" must report NoNode rather than acquiring a lock on a
+// directory that does not exist.
+func TestLockRejectsPrefixSiblingPath(t *testing.T) {
+	server, _, cleanup := createTestServer(t, "")
+	defer cleanup()
+
+	ctx := context.Background()
+
+	_, err := server.Create(ctx, "keyspaces/foobar/Keyspace", []byte("foobar"))
+	require.NoError(t, err)
+
+	_, err = server.Lock(ctx, "keyspaces/foo", "holder")
+	require.True(t, topo.IsErrType(err, topo.NoNode), "Lock on a nonexistent directory should report NoNode, got: %v", err)
+
+	_, err = server.TryLock(ctx, "keyspaces/foo", "holder")
+	require.True(t, topo.IsErrType(err, topo.NoNode), "TryLock on a nonexistent directory should report NoNode, got: %v", err)
+
+	// The real directory is still lockable.
+	lock, err := server.Lock(ctx, "keyspaces/foobar", "holder")
+	require.NoError(t, err)
+	require.NoError(t, lock.Unlock(ctx))
+}

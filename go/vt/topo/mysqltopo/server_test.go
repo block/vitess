@@ -30,7 +30,7 @@ import (
 	"vitess.io/vitess/go/vt/topo/test"
 )
 
-func TestMatchDirectoryPattern(t *testing.T) {
+func TestMatchPrefixPattern(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
@@ -40,11 +40,6 @@ func TestMatchDirectoryPattern(t *testing.T) {
 			name:     "simple path",
 			input:    "/path/to/key",
 			expected: "/path/to/key%",
-		},
-		{
-			name:     "simple path",
-			input:    "/path/to/key/",
-			expected: "/path/to/key/%",
 		},
 		{
 			name:     "path with underscore",
@@ -80,6 +75,61 @@ func TestMatchDirectoryPattern(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			result := matchPrefix(tt.input)
+			if result != tt.expected {
+				t.Errorf("matchPrefix(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestMatchDirectoryPattern(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple path",
+			input:    "/path/to/key",
+			expected: "/path/to/key/%",
+		},
+		{
+			name:     "path with underscore",
+			input:    "/path/to/key_with_underscore",
+			expected: "/path/to/key\\_with\\_underscore/%",
+		},
+		{
+			name:     "path with percent",
+			input:    "/path/to/key%with%percent",
+			expected: "/path/to/key\\%with\\%percent/%",
+		},
+		{
+			name:     "path with both underscore and percent",
+			input:    "/path/to/key_%mixed",
+			expected: "/path/to/key\\_\\%mixed/%",
+		},
+		{
+			// A "" or "/" root leaves resolved paths relative, so there is no
+			// separator to anchor on: everything is contained in it.
+			name:     "empty path",
+			input:    "",
+			expected: "%",
+		},
+		{
+			name:     "root path",
+			input:    "/",
+			expected: "%",
+		},
+		{
+			name:     "path with trailing slash",
+			input:    "/path/to/key/",
+			expected: "/path/to/key/%",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			result := matchDirectory(tt.input)
 			if result != tt.expected {
 				t.Errorf("matchDirectory(%q) = %q, want %q", tt.input, result, tt.expected)
@@ -88,16 +138,16 @@ func TestMatchDirectoryPattern(t *testing.T) {
 	}
 }
 
-func TestMatchDirectoryMatching(t *testing.T) {
+func TestMatchPrefixMatching(t *testing.T) {
 	tests := []struct {
 		name           string
-		lockPath       string
+		prefix         string
 		shouldMatch    []string
 		shouldNotMatch []string
 	}{
 		{
-			name:     "directory lock matching",
-			lockPath: "/path/to/foo",
+			name:   "prefix matching keeps siblings",
+			prefix: "/path/to/foo",
 			shouldMatch: []string{
 				"/path/to/foo/subdir/file2",
 				"/path/to/foo/a",
@@ -114,7 +164,53 @@ func TestMatchDirectoryMatching(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pattern := matchDirectory(tt.lockPath)
+			pattern := matchPrefix(tt.prefix)
+			for _, shouldMatch := range tt.shouldMatch {
+				// Basic prefix check (the % at the end means it should start with the prefix)
+				prefix := pattern[:len(pattern)-1] // Remove the trailing %
+				if !hasPrefix(shouldMatch, prefix) {
+					t.Errorf("Pattern %q should match %q, but prefix check failed", pattern, shouldMatch)
+				}
+			}
+
+			// Test that non-matches don't have the right prefix
+			for _, shouldNotMatch := range tt.shouldNotMatch {
+				prefix := pattern[:len(pattern)-1] // Remove the trailing %
+				if hasPrefix(shouldNotMatch, prefix) {
+					t.Errorf("Pattern %q should NOT match %q, but prefix check passed", pattern, shouldNotMatch)
+				}
+			}
+		})
+	}
+}
+
+func TestMatchDirectoryMatching(t *testing.T) {
+	tests := []struct {
+		name           string
+		dirPath        string
+		shouldMatch    []string
+		shouldNotMatch []string
+	}{
+		{
+			name:    "directory matching is contained",
+			dirPath: "/path/to/foo",
+			shouldMatch: []string{
+				"/path/to/foo/subdir/file2",
+				"/path/to/foo/a",
+			},
+			shouldNotMatch: []string{
+				"/other/path",            // completely different
+				"/path/to/fo_other",      // underscore variant
+				"/path/to/foo",           // the directory itself is not contained in it
+				"/path/to/foot",          // prefix sibling, not a child
+				"/path/to/foot/otherkey", // prefix sibling's child
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pattern := matchDirectory(tt.dirPath)
 			for _, shouldMatch := range tt.shouldMatch {
 				// Basic prefix check (the % at the end means it should start with the prefix)
 				prefix := pattern[:len(pattern)-1] // Remove the trailing %
