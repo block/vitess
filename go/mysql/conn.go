@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -85,6 +86,14 @@ type Conn struct {
 	// query is in progress.  If the streaming query returned no
 	// fields, this is set to an empty array (but not nil).
 	fields []*querypb.Field
+
+	// streamOK holds the OK packet of a streaming query (ExecuteStreamFetch) that
+	// returned no resultset — e.g. a CALL of a procedure that performs DML. For
+	// such a query the OK packet is the only place its RowsAffected, InsertID,
+	// Info and status flags appear, and ExecuteStreamFetch consumes it, so they
+	// are captured here for the caller to inspect once streaming completes. It is
+	// nil when the query returned a resultset, exposed via StreamOKResult.
+	streamOK *sqltypes.Result
 
 	// salt is sent by the server during initial handshake to be used for authentication
 	salt []byte
@@ -1294,6 +1303,9 @@ func (c *Conn) handleComStmtExecute(handler Handler, data []byte) (kontinue bool
 	receivedResult := false
 	// sendFinished is set if the response should just be an OK packet.
 	sendFinished := false
+	// okSentWithMoreResults is set if that OK carried SERVER_MORE_RESULTS_EXISTS,
+	// meaning an ERR is still a protocol-legal next result after it.
+	okSentWithMoreResults := false
 	prepare := c.PrepareData[stmtID]
 	err = handler.ComStmtExecute(c, prepare, func(qr *sqltypes.Result) error {
 		if sendFinished {
@@ -1306,6 +1318,7 @@ func (c *Conn) handleComStmtExecute(handler Handler, data []byte) (kontinue bool
 
 			if len(qr.Fields) == 0 {
 				sendFinished = true
+				okSentWithMoreResults = c.StatusFlags&ServerMoreResultsExists != 0
 				// We should not send any more packets after this.
 				ok := PacketOK{
 					affectedRows:     qr.RowsAffected,
@@ -1336,16 +1349,20 @@ func (c *Conn) handleComStmtExecute(handler Handler, data []byte) (kontinue bool
 		}
 	} else {
 		if err != nil {
-			// We can't send an error in the middle of a stream.
-			// All we can do is abort the send, which will cause a 2013.
-			log.Error(fmt.Sprintf("Error in the middle of a stream to %s: %v", c, err))
-			return false
-		}
-
-		// Send the end packet only sendFinished is false (results were streamed).
-		// In this case the affectedRows and lastInsertID are always 0 since it
-		// was a read operation.
-		if !sendFinished {
+			// A final OK (no SERVER_MORE_RESULTS_EXISTS) already terminated
+			// the result. Appending an ERR would desynchronize the protocol,
+			// so tear down the connection instead.
+			if sendFinished && !okSentWithMoreResults {
+				log.Error("Error after OK-terminated result", slog.String("connection", c.String()), slog.Any("error", err))
+				return false
+			}
+			if !c.writeErrorPacketFromErrorAndLog(err) {
+				return false
+			}
+		} else if !sendFinished {
+			// Send the end packet only sendFinished is false (results were streamed).
+			// In this case the affectedRows and lastInsertID are always 0 since it
+			// was a read operation.
 			if err := c.writeEndResult(false, 0, 0, handler.WarningCount(c)); err != nil {
 				log.Error(fmt.Sprintf("Error writing result to %s: %v", c, err))
 				return false
@@ -1483,6 +1500,9 @@ func (c *Conn) execQueryMulti(query string, handler Handler) execResult {
 	// end packet after the query is done or not. Initially we don't need to send an end packet
 	// so we initialize this value to false.
 	needsEndPacket := false
+	// lastOKHadMoreResults is set if the last OK carried SERVER_MORE_RESULTS_EXISTS,
+	// meaning an ERR is still a protocol-legal next result after it.
+	lastOKHadMoreResults := false
 	callbackCalled := false
 	res := execSuccess
 
@@ -1534,6 +1554,7 @@ func (c *Conn) execQueryMulti(query string, handler Handler) execResult {
 					sessionStateData: qr.QueryResult.SessionStateChanges,
 				}
 				needsEndPacket = false
+				lastOKHadMoreResults = flag&ServerMoreResultsExists != 0
 				return c.writeOKPacket(&ok)
 			}
 
@@ -1566,10 +1587,17 @@ func (c *Conn) execQueryMulti(query string, handler Handler) execResult {
 	}
 
 	if err != nil {
-		// We can't send an error in the middle of a stream.
-		// All we can do is abort the send, which will cause a 2013.
-		log.Error(fmt.Sprintf("Error in the middle of a stream to %s: %v", c, err))
-		return connErr
+		// A final OK (no SERVER_MORE_RESULTS_EXISTS) already terminated the
+		// last result. Appending an ERR would desynchronize the protocol,
+		// so tear down the connection instead.
+		if !needsEndPacket && !lastOKHadMoreResults {
+			log.Error("Error after OK-terminated result", slog.String("connection", c.String()), slog.Any("error", err))
+			return connErr
+		}
+		if !c.writeErrorPacketFromErrorAndLog(err) {
+			return connErr
+		}
+		return execErr
 	}
 
 	// If we haven't sent the final packet for the last query, we should send that too.
@@ -1633,6 +1661,9 @@ func (c *Conn) execQuery(query string, handler Handler, more bool) execResult {
 	callbackCalled := false
 	// sendFinished is set if the response should just be an OK packet.
 	sendFinished := false
+	// okSentWithMoreResults is set if that OK carried SERVER_MORE_RESULTS_EXISTS,
+	// meaning an ERR is still a protocol-legal next result after it.
+	okSentWithMoreResults := false
 
 	err := handler.ComQuery(c, query, func(qr *sqltypes.Result) error {
 		flag := c.StatusFlags
@@ -1649,6 +1680,7 @@ func (c *Conn) execQuery(query string, handler Handler, more bool) execResult {
 
 			if len(qr.Fields) == 0 {
 				sendFinished = true
+				okSentWithMoreResults = flag&ServerMoreResultsExists != 0
 
 				// A successful callback with no fields means that this was a
 				// DML or other write-only operation.
@@ -1686,10 +1718,17 @@ func (c *Conn) execQuery(query string, handler Handler, more bool) execResult {
 		return execErr
 	}
 	if err != nil {
-		// We can't send an error in the middle of a stream.
-		// All we can do is abort the send, which will cause a 2013.
-		log.Error(fmt.Sprintf("Error in the middle of a stream to %s: %v", c, err))
-		return connErr
+		// A final OK (no SERVER_MORE_RESULTS_EXISTS) already terminated the
+		// result. Appending an ERR would desynchronize the protocol, so
+		// tear down the connection instead.
+		if sendFinished && !okSentWithMoreResults {
+			log.Error("Error after OK-terminated result", slog.String("connection", c.String()), slog.Any("error", err))
+			return connErr
+		}
+		if !c.writeErrorPacketFromErrorAndLog(err) {
+			return connErr
+		}
+		return execErr
 	}
 
 	// Send the end packet only sendFinished is false (results were streamed).

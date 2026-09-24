@@ -9,6 +9,10 @@ on:
   pull_request:
     branches: '**'
 
+concurrency:
+  group: format('{0}-{1}', ${{ github.ref }}, 'Static Code Checks, Etc.')
+  cancel-in-progress: true
+
 permissions: read-all
 
 jobs:
@@ -34,7 +38,11 @@ jobs:
         with:
           persist-credentials: 'false'
 
+      # Only uploads dependency data for FOSSA's license tracking; the policy
+      # check (skip-test) is off, so a pull request gains nothing from it.
+      # Pushes keep main, the release branches and the tags scanned.
       - name: Run FOSSA scan and upload build data
+        if: github.event_name == 'push'
         uses: fossa-contrib/fossa-action@3d2ef181b1820d6dcd1972f86a767d18167fa19b # v3.0.1
         with:
           # This is a push-only API token: https://github.com/fossa-contrib/fossa-action#push-only-api-token
@@ -52,6 +60,8 @@ jobs:
               - '*.go'
               - 'go.sum'
               - 'go.mod'
+              - 'tools/**/go.mod'
+              - 'tools/**/go.sum'
               - '.github/workflows/static_checks_etc.yml'
             parser_changes:
               - 'go/vt/sqlparser/**'
@@ -126,10 +136,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: ${{ (github.base_ref == 'main' || (github.base_ref == '' && github.ref_name == 'main')) && 'true' || 'false' }}
+          cache-dependency-path: |
+            go.sum
+            tools/**/go.sum
 
       - name: Tune the OS
         if: steps.changes.outputs.go_files == 'true'
-        uses: ./.github/actions/tune-os
+        uses: $/.github/actions/tune-os
 
       - name: Get dependencies
         if: (steps.changes.outputs.parser_changes == 'true' || steps.changes.outputs.go_files == 'true')
@@ -137,16 +150,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y make unzip g++ etcd-client etcd-server curl git wget
           sudo service etcd stop
-          go mod download
 
       - name: Run make minimaltools
         if: (steps.changes.outputs.parser_changes == 'true' || steps.changes.outputs.go_files == 'true')
         run: |
           make minimaltools
-
-      - name: Install goimports
-        run: |
-          go install golang.org/x/tools/cmd/goimports@034e59c473362f8f2be47694d98fd3f12a1ad497 # v0.39.0
 
       - name: Install yamllint
         if: steps.changes.outputs.github == 'true'
@@ -197,7 +205,10 @@ jobs:
         with:
           args: --timeout 10m
           install-mode: "goinstall"
-          skip-cache: true
+          # Same policy as the setup-go action: only pushes to main and the
+          # release branches save the golangci-lint cache, everything else
+          # restores from it.
+          skip-save-cache: ${{ !(github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release-'))) }}
           working-directory: go
           version: v2.9.0
 
@@ -206,14 +217,18 @@ jobs:
         run: |
           set -e
           go mod tidy
+          for mod in tools/*/go.mod; do
+            (cd "$(dirname "$mod")" && go mod tidy)
+          done
           output=$(git status -s)
           if [ -z "${output}" ]; then
             exit 0
           fi
-          echo 'We wish to maintain a tidy state for go mod. Please run `go mod tidy` on your branch, commit and push again.'
+          echo 'We wish to maintain a tidy state for go mod. Please run `go mod tidy` in the affected module on your branch, commit and push again.'
           echo 'Running `go mod tidy` on this CI test yields with the following changes:'
           echo "$output"
           exit 1
+
 
       - name: Setup Node
         if: steps.changes.outputs.proto_changes == 'true'

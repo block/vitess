@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/sysvars"
 	"vitess.io/vitess/go/vt/tableacl"
 	"vitess.io/vitess/go/vt/vtenv"
 	"vitess.io/vitess/go/vt/vterrors"
@@ -162,6 +163,12 @@ type Plan struct {
 
 	// Permissions stores the permissions for the tables accessed in the query.
 	Permissions []Permission
+	// TablesUndetermined is set for a statement whose tables the parser
+	// discards (DO, CALL, REPAIR, OPTIMIZE, LOAD DATA): Permissions is empty
+	// because none could be derived, not because the statement touches no
+	// table. Under strict table ACL the executor denies such a statement
+	// rather than skip the check.
+	TablesUndetermined bool
 
 	// FullQuery will be set for all plans.
 	FullQuery *sqlparser.ParsedQuery
@@ -260,17 +267,17 @@ func Build(env *vtenv.Environment, statement sqlparser.Statement, tables map[str
 		return nil, err
 	}
 	plan.AllTables = lookupAllTables(statement, tables)
-	plan.Permissions = BuildPermissions(statement)
+	plan.Permissions, plan.TablesUndetermined = BuildPermissions(statement)
 	return plan, nil
 }
 
 // BuildStreaming builds a streaming plan based on the schema.
 func BuildStreaming(statement sqlparser.Statement, tables map[string]*schema.Table) (*Plan, error) {
 	plan := &Plan{
-		PlanID:      PlanSelectStream,
-		FullQuery:   GenerateFullQuery(statement),
-		Permissions: BuildPermissions(statement),
+		PlanID:    PlanSelectStream,
+		FullQuery: GenerateFullQuery(statement),
 	}
+	plan.Permissions, plan.TablesUndetermined = BuildPermissions(statement)
 
 	switch stmt := statement.(type) {
 	case *sqlparser.Select:
@@ -278,7 +285,9 @@ func BuildStreaming(statement sqlparser.Statement, tables map[string]*schema.Tab
 			plan.NeedsReservedConn = true
 		}
 		plan.Table = lookupTables(stmt.From, tables)
-	case *sqlparser.Show, *sqlparser.Union, *sqlparser.CallProc, sqlparser.Explain:
+	case *sqlparser.Show, *sqlparser.Union, sqlparser.Explain:
+	case *sqlparser.CallProc:
+		plan.PlanID = PlanCallProc
 	case *sqlparser.Analyze:
 		plan.PlanID = PlanOtherRead
 	default:
@@ -332,7 +341,7 @@ func BuildSettingQuery(settings []string, parser *sqlparser.Parser) (query strin
 	}
 	var setExprs sqlparser.SetExprs
 	var resetSetExprs sqlparser.SetExprs
-	lDefault := sqlparser.NewStrLiteral("default")
+	defaultValue := &sqlparser.Default{}
 	for _, setting := range settings {
 		stmt, err := parser.Parse(setting)
 		if err != nil {
@@ -348,7 +357,17 @@ func BuildSettingQuery(settings []string, parser *sqlparser.Parser) (query strin
 			if sysVar.Scope != sqlparser.SessionScope && sysVar.Scope != sqlparser.NoScope {
 				return "", "", vterrors.Errorf(vtrpcpb.Code_INTERNAL, "[BUG]: session scope expected, got: %s", sysVar.Scope.ToString())
 			}
-			resetSetExprs = append(resetSetExprs, &sqlparser.SetExpr{Var: sysVar, Expr: lDefault})
+			resetExpr := sqlparser.Expr(defaultValue)
+			switch sysVar.Name.Lowered() {
+			case sysvars.ForeignKeyChecks, sysvars.UniqueChecks:
+				// MySQL Bug#121262: `SET SESSION foreign_key_checks = DEFAULT` (and
+				// unique_checks) sets the session value to the opposite of the global
+				// value, so `default` would hand the next caller a connection with the
+				// checks off. Restore the global value explicitly, which is what DEFAULT
+				// means for a session variable.
+				resetExpr = &sqlparser.Variable{Scope: sqlparser.GlobalScope, Name: sysVar.Name}
+			}
+			resetSetExprs = append(resetSetExprs, &sqlparser.SetExpr{Var: sysVar, Expr: resetExpr})
 		}
 	}
 	return sqlparser.String(&sqlparser.Set{Exprs: setExprs}), sqlparser.String(&sqlparser.Set{Exprs: resetSetExprs}), nil

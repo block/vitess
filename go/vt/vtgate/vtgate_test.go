@@ -175,8 +175,8 @@ func TestVTGatePrepareError(t *testing.T) {
 	require.Nil(t, qr)
 
 	newCounts := errorCounts.Counts()
-	require.Contains(t, newCounts, "Prepare.TestUnsharded.primary.INTERNAL")
-	require.Equal(t, counts["Prepare.TestUnsharded.primary.INTERNAL"]+1, newCounts["Prepare.TestUnsharded.primary.INTERNAL"])
+	require.Contains(t, newCounts, "Prepare.TestUnsharded.primary.INVALID_ARGUMENT")
+	require.Equal(t, counts["Prepare.TestUnsharded.primary.INVALID_ARGUMENT"]+1, newCounts["Prepare.TestUnsharded.primary.INVALID_ARGUMENT"])
 
 	for k, v := range newCounts {
 		if strings.HasPrefix(k, "Execute") {
@@ -264,6 +264,7 @@ func TestVTGateStreamExecute(t *testing.T) {
 		},
 		"select id from t1",
 		nil,
+		false,
 		func(r *sqltypes.Result) error {
 			qrs = append(qrs, r)
 			return nil
@@ -312,7 +313,7 @@ func TestVTGateBindVarError(t *testing.T) {
 	}, {
 		name: "StreamExecute",
 		f: func() error {
-			_, err := vtg.StreamExecute(ctx, nil, session, "", bindVars, func(_ *sqltypes.Result) error { return nil })
+			_, err := vtg.StreamExecute(ctx, nil, session, "", bindVars, false, func(_ *sqltypes.Result) error { return nil })
 			return err
 		},
 	}}
@@ -362,6 +363,7 @@ func testErrorPropagation(t *testing.T, ctx context.Context, vtg *VTGate, sbcs [
 		session,
 		"select id from t1",
 		nil,
+		false,
 		func(r *sqltypes.Result) error {
 			return nil
 		},
