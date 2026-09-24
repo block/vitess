@@ -49,13 +49,42 @@ jobs:
           #   - Run in other dedicated workflows
           #   - Not cluster tests (unit tests, examples, etc.)
           #   - Special upgrade/downgrade tests
+          #   - Covering functionality this fork does not consume, so the
+          #     runner time is better spent on the shards that gate our
+          #     patches. That is backups, VReplication, and reparenting
+          #     (vtorc/ERS/PRS). Note that "vstream" is deliberately kept.
           EXCLUDE_SHARDS='[
             "",
             "java",
             "docker_cluster",
             "5",
             "28",
-            "onlineddl_flow"
+            "onlineddl_flow",
+
+            "backup_pitr",
+            "backup_pitr_mysqlshell",
+            "backup_pitr_xtrabackup",
+            "vtbackup",
+            "vtctlbackup_sharded_clustertest_heavy",
+            "xb_backup",
+            "xb_recovery",
+
+            "vreplication_across_db_versions",
+            "vreplication_basic",
+            "vreplication_cellalias",
+            "vreplication_copy_parallel",
+            "vreplication_foreign_key_stress",
+            "vreplication_mariadb_to_mysql",
+            "vreplication_migrate",
+            "vreplication_multi_tenant",
+            "vreplication_partial_movetables_and_materialize",
+            "vreplication_v2",
+            "vreplication_vdiff2",
+            "vreplication_vtctldclient_movetables_tz",
+
+            "ers_prs_newfeatures_heavy",
+            "vtorc",
+            "vttablet_prscomplex"
           ]'
 
           # Build matrix
