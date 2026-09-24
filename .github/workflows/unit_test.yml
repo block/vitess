@@ -68,15 +68,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # mysql57 tests
-          - platform: mysql57
-            evalengine: "0"
-            flavor: mysql-5.7
-            java: true
-
-          - platform: mysql57
-            evalengine: "1"
-            flavor: mysql-5.7
+          # mysql57 tests are not run in this fork: we do not deploy MySQL 5.7,
+          # so the two legs only cost runner time. Re-add them here if that
+          # changes.
 
           # mysql80 tests
           - platform: mysql80
