@@ -1,7 +1,9 @@
 name: Reparent New Vtctl - Upgrade Downgrade Testing
+# This fork does not use vtorc or Vitess-driven reparenting, so this workflow
+# is manual-dispatch only. Restore the pull_request trigger below to
+# re-enable it.
 on:
-  pull_request:
-    branches: '**'
+  workflow_dispatch:
 
 concurrency:
   group: format('{0}-{1}', ${{ github.ref }}, 'Upgrade Downgrade Testing Reparent New Vtctl')
