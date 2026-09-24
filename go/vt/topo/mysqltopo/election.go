@@ -27,6 +27,11 @@ import (
 	"vitess.io/vitess/go/vt/topo"
 )
 
+// electionCleanupTimeout bounds the best-effort removal of our election record.
+// These run on teardown paths where an unreachable or stalled MySQL must not be
+// able to block process shutdown.
+const electionCleanupTimeout = 5 * time.Second
+
 // MySQLLeaderParticipation implements topo.LeaderParticipation for MySQL.
 type MySQLLeaderParticipation struct {
 	server   *Server
@@ -138,13 +143,32 @@ func (lp *MySQLLeaderParticipation) Stop() {
 	}
 	lp.mu.Unlock()
 
-	// Remove our election record (best effort)
-	_, _ = lp.server.db.ExecContext(context.Background(),
-		"DELETE FROM topo_elections WHERE name = ? AND leader_id = ?",
-		lp.name, lp.id)
+	// Remove our election record (best effort). This runs before wg.Wait()
+	// below, so it must be bounded: an unreachable server would otherwise
+	// block Stop() — and process shutdown — indefinitely.
+	lp.deleteElectionRecord("stop")
 
 	// Wait for campaign goroutine to finish
 	lp.wg.Wait()
+}
+
+// deleteElectionRecord removes this participant's election row on a best-effort
+// basis, bounded so an unreachable server cannot hang the caller. Cancellation
+// of lp.ctx is deliberately dropped (the teardown paths call this after
+// cancelling it) while its values are preserved.
+func (lp *MySQLLeaderParticipation) deleteElectionRecord(reason string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(lp.ctx), electionCleanupTimeout)
+	defer cancel()
+
+	if _, err := lp.server.db.ExecContext(ctx,
+		"DELETE FROM topo_elections WHERE name = ? AND leader_id = ?",
+		lp.name, lp.id); err != nil {
+		log.Warn("Could not remove election record",
+			slog.String("name", lp.name),
+			slog.String("id", lp.id),
+			slog.String("reason", reason),
+			slog.Any("error", err))
+	}
 }
 
 // GetCurrentLeaderID is part of the topo.LeaderParticipation interface.
@@ -336,20 +360,21 @@ func (lp *MySQLLeaderParticipation) renewLeadership() bool {
 // loseLeadership handles loss of leadership.
 func (lp *MySQLLeaderParticipation) loseLeadership() {
 	lp.mu.Lock()
-	defer lp.mu.Unlock()
-
-	if lp.isLeader {
-		lp.isLeader = false
-		if lp.leaderCancel != nil {
-			lp.leaderCancel()
-			lp.leaderCancel = nil
-		}
-
-		// Proactively delete our election record instead of waiting for TTL expiry
-		_, _ = lp.server.db.ExecContext(context.Background(),
-			"DELETE FROM topo_elections WHERE name = ? AND leader_id = ?",
-			lp.name, lp.id)
-
-		log.Info("Lost leadership", slog.String("name", lp.name))
+	if !lp.isLeader {
+		lp.mu.Unlock()
+		return
 	}
+	lp.isLeader = false
+	if lp.leaderCancel != nil {
+		lp.leaderCancel()
+		lp.leaderCancel = nil
+	}
+	lp.mu.Unlock()
+
+	// Proactively delete our election record instead of waiting for TTL expiry.
+	// Deliberately outside lp.mu: holding the mutex across a database call lets
+	// an unreachable server stall every other operation that needs it.
+	lp.deleteElectionRecord("lost leadership")
+
+	log.Info("Lost leadership", slog.String("name", lp.name))
 }

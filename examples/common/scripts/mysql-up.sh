@@ -142,6 +142,21 @@ fi
 
 mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASS" -e "CREATE DATABASE IF NOT EXISTS topo" || true
 
+# Create the topo tables. NewServer deliberately never creates them, so a
+# bootstrap has to do it explicitly or the AddCellInfo below opens an empty
+# schema and fails. schema.sql is the same DDL the Go code embeds, so the two
+# cannot drift.
+echo "Creating topo schema..."
+topo_schema="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../.." && pwd)/go/vt/topo/mysqltopo/schema.sql"
+if [[ ! -f "$topo_schema" ]]; then
+    echo "Failed to locate the topo schema at ${topo_schema}"
+    exit 1
+fi
+mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASS" topo < "$topo_schema" || {
+    echo "Failed to create topo schema"
+    exit 1
+}
+
 # And also add the CellInfo description for the cell.
 # If the node already exists, it's fine, means we used existing data.
 echo "add ${cell} CellInfo"

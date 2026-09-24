@@ -199,3 +199,39 @@ func TestLockRejectsPrefixSiblingPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, lock.Unlock(ctx))
 }
+
+// TestAcquireLockRejectsNonPositiveTTL verifies that a non-positive TTL is
+// rejected before any lock row is inserted.
+//
+// --topo-mysql-lock-ttl is an operator-settable flag, so a zero or negative
+// value reaches acquireLock. Without validation that is doubly broken: the
+// heartbeat goroutine calls time.NewTicker(ttl/3), which panics on a
+// non-positive duration and takes the whole process down unrecoverably, and
+// the row is inserted with an already-past expires_at, so the next acquirer's
+// reaping DELETE removes it and two holders can hold the same lock.
+func TestAcquireLockRejectsNonPositiveTTL(t *testing.T) {
+	server, _, cleanup := createTestServer(t, "")
+	defer cleanup()
+
+	ctx := t.Context()
+
+	_, err := server.Create(ctx, "ttltest/somefile", []byte("data"))
+	require.NoError(t, err)
+
+	for _, ttl := range []time.Duration{0, -time.Second} {
+		_, err := server.LockWithTTL(ctx, "ttltest", "holder", ttl)
+		require.ErrorContains(t, err, "lock TTL must be positive",
+			"a %v TTL must be rejected, not panic the heartbeat goroutine", ttl)
+
+		var rows int
+		require.NoError(t, server.db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM topo_locks WHERE path = ?",
+			server.resolvePath("ttltest")).Scan(&rows))
+		require.Zero(t, rows, "a rejected acquisition must not leave a lock row behind")
+	}
+
+	// A positive TTL still works.
+	lock, err := server.LockWithTTL(ctx, "ttltest", "holder", 30*time.Second)
+	require.NoError(t, err)
+	require.NoError(t, lock.Unlock(ctx))
+}

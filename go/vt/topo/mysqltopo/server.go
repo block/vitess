@@ -38,6 +38,7 @@ package mysqltopo
 import (
 	"context"
 	"database/sql"
+	_ "embed"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -382,46 +383,43 @@ func CreateSchema(serverAddr string) error {
 	return nil
 }
 
+// schemaSQL is the topo schema DDL, shared verbatim with bootstrap scripts that
+// apply it through the mysql client. See schema.sql.
+//
+//go:embed schema.sql
+var schemaSQL string
+
 // createTables creates the required topo tables if they don't already exist.
 func createTables(db *sql.DB) error {
-	queries := []string{
-		// topo_data table stores the topology data
-		`CREATE TABLE IF NOT EXISTS topo_data (
-			path VARCHAR(512) NOT NULL PRIMARY KEY,
-			data MEDIUMBLOB,
-			version BIGINT NOT NULL DEFAULT 1,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-		) ENGINE=InnoDB`,
-
-		// topo_locks table stores lock information
-		`CREATE TABLE IF NOT EXISTS topo_locks (
-			path VARCHAR(512) NOT NULL PRIMARY KEY,
-			contents TEXT,
-			expires_at TIMESTAMP NOT NULL,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			INDEX expires_idx (expires_at)
-		) ENGINE=InnoDB`,
-
-		// topo_elections table stores leader election information
-		`CREATE TABLE IF NOT EXISTS topo_elections (
-			name VARCHAR(512) NOT NULL PRIMARY KEY,
-			leader_id VARCHAR(255) NOT NULL,
-			contents TEXT,
-			expires_at TIMESTAMP NOT NULL,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-			INDEX expires_idx (expires_at)
-		) ENGINE=InnoDB`,
-	}
-
-	for _, query := range queries {
+	for _, query := range schemaStatements() {
 		if _, err := db.Exec(query); err != nil {
 			return fmt.Errorf("failed to create table: %v", err)
 		}
 	}
 
 	return nil
+}
+
+// schemaStatements returns the DDL from schema.sql as individual statements.
+// The file is shared with cluster bootstrap scripts, which pipe it to the mysql
+// client, so statements there are separated by a line holding only a semicolon.
+func schemaStatements() []string {
+	chunks := strings.Split(schemaSQL, "\n;")
+	stmts := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		// Drop the file's leading `--` comment lines so each statement is
+		// handed to the driver on its own.
+		var body []string
+		for _, line := range strings.Split(chunk, "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "--") {
+				body = append(body, line)
+			}
+		}
+		if stmt := strings.TrimSpace(strings.Join(body, "\n")); stmt != "" {
+			stmts = append(stmts, stmt)
+		}
+	}
+	return stmts
 }
 
 // checkClosed returns an error if the server has been closed.

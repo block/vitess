@@ -26,6 +26,9 @@ import (
 
 	"vitess.io/vitess/go/vt/log"
 	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/vterrors"
+
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 // MySQLLockDescriptor implements topo.LockDescriptor for MySQL.
@@ -164,6 +167,17 @@ func (s *Server) TryLock(ctx context.Context, dirPath, contents string) (topo.Lo
 
 // acquireLock attempts to acquire a lock with the given parameters.
 func (s *Server) acquireLock(ctx context.Context, path, contents string, ttl time.Duration, tryLock bool) (topo.LockDescriptor, error) {
+	// Reject a non-positive TTL before inserting anything. --topo-mysql-lock-ttl
+	// is operator-settable, so a zero or negative value reaches here, and it is
+	// doubly unsafe: heartbeat's time.NewTicker(ttl/3) panics on a non-positive
+	// duration (in a goroutine, so it takes the process down), and the row would
+	// be written with an already-past expires_at that the next acquirer reaps,
+	// letting two holders hold the same lock.
+	if ttl <= 0 {
+		return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT,
+			"lock TTL must be positive, got %v", ttl)
+	}
+
 	// Suffix the stored contents with a per-acquisition unique token so this
 	// descriptor's Check/Unlock/heartbeat can match its own row exactly.
 	// Caller-provided contents (typically json with hostname/action) are not
