@@ -198,7 +198,7 @@ func TestExecutorMaxMemoryRowsExceeded(t *testing.T) {
 		}
 
 		sbclookup.SetResults([]*sqltypes.Result{result})
-		err = executor.StreamExecute(ctx, nil, "TestExecutorMaxMemoryRowsExceeded", session, test.query, nil, fn)
+		err = executor.StreamExecute(ctx, nil, "TestExecutorMaxMemoryRowsExceeded", session, test.query, nil, false, fn)
 		require.NoError(t, err, "maxMemoryRows limit does not apply to StreamExecute")
 	}
 }
@@ -353,7 +353,7 @@ func TestExecutorTransactionsAutoCommitStreaming(t *testing.T) {
 	var results []*sqltypes.Result
 
 	// begin.
-	err := executor.StreamExecute(ctx, nil, "TestExecute", session, "begin", nil, func(result *sqltypes.Result) error {
+	err := executor.StreamExecute(ctx, nil, "TestExecute", session, "begin", nil, false, func(result *sqltypes.Result) error {
 		results = append(results, result)
 		return nil
 	})
@@ -1595,6 +1595,71 @@ func TestExecutorDeniedErrorNoBuffer(t *testing.T) {
 	})
 }
 
+// TestVTGateExecuteMultiTimeoutUsesParentContextPerStatement verifies that
+// each statement in an ExecuteMulti request receives a timeout derived from the
+// original request context.
+func TestVTGateExecuteMultiTimeoutUsesParentContextPerStatement(t *testing.T) {
+	executor, sbc1, sbc2, _, ctx := createExecutorEnv(t)
+
+	oldTimeout := mysqlQueryTimeout
+	mysqlQueryTimeout = 100 * time.Millisecond
+	sbc1.ExecDelayResponse = 5 * time.Millisecond
+	t.Cleanup(func() {
+		mysqlQueryTimeout = oldTimeout
+		sbc1.ExecDelayResponse = 0
+	})
+
+	session := &vtgatepb.Session{
+		Autocommit:   true,
+		TargetString: "TestExecutor",
+	}
+	vtg := newVTGate(executor, nil, nil, nil, nil)
+
+	_, results, err := vtg.ExecuteMulti(ctx, nil, session, "select id from user where id = 1; select id from user where id = 1")
+
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	require.EqualValues(t, 2, sbc1.ExecCount.Load())
+	require.Zero(t, sbc2.ExecCount.Load())
+}
+
+// TestVTGateStreamExecuteMultiTimeoutUsesParentContextPerStatement verifies
+// that each statement in a StreamExecuteMulti request receives a timeout
+// derived from the original request context.
+func TestVTGateStreamExecuteMultiTimeoutUsesParentContextPerStatement(t *testing.T) {
+	executor, sbc1, sbc2, _, ctx := createExecutorEnv(t)
+
+	oldTimeout := mysqlQueryTimeout
+	mysqlQueryTimeout = 100 * time.Millisecond
+	sbc1.ExecDelayResponse = 5 * time.Millisecond
+	t.Cleanup(func() {
+		mysqlQueryTimeout = oldTimeout
+		sbc1.ExecDelayResponse = 0
+	})
+
+	session := &vtgatepb.Session{
+		Autocommit:   true,
+		TargetString: "TestExecutor",
+	}
+	vtg := newVTGate(executor, nil, nil, nil, nil)
+	var moreFlags []bool
+
+	_, err := vtg.StreamExecuteMulti(ctx, nil, session, "select id from user where id = 1; select id from user where id = 1", func(qr sqltypes.QueryResponse, more bool, firstPacket bool) error {
+		if qr.QueryError != nil {
+			return qr.QueryError
+		}
+		if firstPacket {
+			moreFlags = append(moreFlags, more)
+		}
+		return nil
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, []bool{true, false}, moreFlags)
+	require.EqualValues(t, 2, sbc1.ExecCount.Load())
+	require.Zero(t, sbc2.ExecCount.Load())
+}
+
 // TestVSchemaStats makes sure the building and displaying of the
 // VSchemaStats works.
 func TestVSchemaStats(t *testing.T) {
@@ -2065,7 +2130,7 @@ func TestOlapSelectDatabase(t *testing.T) {
 		cbInvoked = true
 		return nil
 	}
-	err := executor.StreamExecute(context.Background(), nil, "TestExecute", econtext.NewSafeSession(session), sql, nil, cb)
+	err := executor.StreamExecute(context.Background(), nil, "TestExecute", econtext.NewSafeSession(session), sql, nil, false, cb)
 	assert.NoError(t, err)
 	assert.True(t, cbInvoked)
 }
@@ -2736,7 +2801,7 @@ func TestExecutorVExplainQueries(t *testing.T) {
 	// Test the streaming side as well
 	var results []sqltypes.Row
 	session = econtext.NewAutocommitSession(&vtgatepb.Session{})
-	err = executor.StreamExecute(ctx, nil, "TestExecutorVExplainQueries", session, "vexplain queries select * from user where name = 'apa'", nil, func(result *sqltypes.Result) error {
+	err = executor.StreamExecute(ctx, nil, "TestExecutorVExplainQueries", session, "vexplain queries select * from user where name = 'apa'", nil, false, func(result *sqltypes.Result) error {
 		results = append(results, result.Rows...)
 		return nil
 	})
@@ -2924,11 +2989,23 @@ func TestExecutorTruncateErrors(t *testing.T) {
 	_, err := executorExecSession(ctx, executor, session, "invalid statement", nil)
 	assert.EqualError(t, err, "syntax error at posi [TRUNCATED]")
 
-	err = executor.StreamExecute(ctx, nil, "TestExecute", session, "invalid statement", nil, fn)
+	err = executor.StreamExecute(ctx, nil, "TestExecute", session, "invalid statement", nil, false, fn)
 	assert.EqualError(t, err, "syntax error at posi [TRUNCATED]")
 
 	_, _, err = executor.Prepare(context.Background(), "TestExecute", session, "invalid statement")
-	assert.EqualError(t, err, "[BUG] unrecognized p [TRUNCATED]")
+	assert.EqualError(t, err, "syntax error at posi [TRUNCATED]")
+}
+
+func TestPrepareDoesNotStartTransaction(t *testing.T) {
+	// MySQL does not start an implicit transaction for COM_STMT_PREPARE, even
+	// with autocommit disabled; the transaction starts at first execution.
+	executor, _, _, _, ctx := createExecutorEnv(t)
+
+	session := &vtgatepb.Session{TargetString: KsTestUnsharded, Autocommit: false}
+
+	_, _, err := executorPrepare(ctx, executor, session, "select id from main1 where id = ?")
+	require.NoError(t, err)
+	require.False(t, session.InTransaction)
 }
 
 func TestExecutorFlushStmt(t *testing.T) {
@@ -3033,7 +3110,7 @@ func TestExecutorKillStmt(t *testing.T) {
 		})
 		t.Run("stream:"+tc.query+tc.errStr, func(t *testing.T) {
 			mysqlCtx := &fakeMysqlConnection{ErrMsg: tc.errStr}
-			err := executor.StreamExecute(context.Background(), mysqlCtx, "TestExecutorKillStmt", econtext.NewAutocommitSession(&vtgatepb.Session{}), tc.query, nil, func(result *sqltypes.Result) error {
+			err := executor.StreamExecute(context.Background(), mysqlCtx, "TestExecutorKillStmt", econtext.NewAutocommitSession(&vtgatepb.Session{}), tc.query, nil, false, func(result *sqltypes.Result) error {
 				return nil
 			})
 			if tc.errStr != "" {

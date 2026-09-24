@@ -3,7 +3,8 @@
 # - Adds initial labels (NeedsWebsiteDocsUpdate, NeedsDescriptionUpdate, NeedsIssue, NeedsBackportReason)
 name: PR opened tasks
 
-permissions: read-all
+permissions:
+  contents: read
 
 on:
   pull_request_target:
@@ -14,6 +15,7 @@ jobs:
   check_labels:
     name: Check for Backport or Forwardport labels
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       skip: ${{ steps.check_labels.outputs.skip }}
 
@@ -52,6 +54,7 @@ jobs:
     permissions:
       pull-requests: write
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: check_labels
     if: needs.check_labels.outputs.skip != 'true'
 
@@ -63,9 +66,6 @@ jobs:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           permission-pull-requests: write
-
-      - name: Set token in environment
-        run: echo "GH_TOKEN=${{ steps.app-token.outputs.token }}" >> "$GITHUB_ENV"
 
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -74,6 +74,8 @@ jobs:
           persist-credentials: 'false'
 
       - name: Add Review Checklist Comment
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           gh pr comment ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} \
@@ -82,6 +84,7 @@ jobs:
   add_initial_labels:
     name: Add Initial Labels
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: check_labels
     if: needs.check_labels.outputs.skip != 'true'
 
@@ -94,10 +97,9 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           permission-pull-requests: write
 
-      - name: Set token in environment
-        run: echo "GH_TOKEN=${{ steps.app-token.outputs.token }}" >> "$GITHUB_ENV"
-
       - name: Add Initial Labels
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           gh pr edit ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} \
@@ -110,6 +112,7 @@ jobs:
       contents: read
       pull-requests: write
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Run actions/labeler
         uses: actions/labeler@634933edcd8ababfe52f92936142cc22ac488b1b # v6.0.1

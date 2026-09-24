@@ -40,14 +40,15 @@ import (
 // This is only for testing.
 func (p *Plan) MarshalJSON() ([]byte, error) {
 	mplan := struct {
-		PlanID            PlanType
-		TableName         sqlparser.IdentifierCS
-		Permissions       []Permission           `json:",omitempty"`
-		FieldQuery        *sqlparser.ParsedQuery `json:",omitempty"`
-		FullQuery         *sqlparser.ParsedQuery `json:",omitempty"`
-		NextCount         string                 `json:",omitempty"`
-		WhereClause       *sqlparser.ParsedQuery `json:",omitempty"`
-		NeedsReservedConn bool                   `json:",omitempty"`
+		PlanID             PlanType
+		TableName          sqlparser.IdentifierCS
+		Permissions        []Permission           `json:",omitempty"`
+		FieldQuery         *sqlparser.ParsedQuery `json:",omitempty"`
+		FullQuery          *sqlparser.ParsedQuery `json:",omitempty"`
+		NextCount          string                 `json:",omitempty"`
+		WhereClause        *sqlparser.ParsedQuery `json:",omitempty"`
+		NeedsReservedConn  bool                   `json:",omitempty"`
+		TablesUndetermined bool                   `json:",omitempty"`
 	}{
 		PlanID:      p.PlanID,
 		TableName:   p.TableName(),
@@ -60,6 +61,9 @@ func (p *Plan) MarshalJSON() ([]byte, error) {
 	}
 	if p.NeedsReservedConn {
 		mplan.NeedsReservedConn = true
+	}
+	if p.TablesUndetermined {
+		mplan.TablesUndetermined = true
 	}
 	return json.Marshal(&mplan)
 }
@@ -386,4 +390,28 @@ func iterateExecFile(name string) (testCaseIterator chan testCase) {
 
 func locateFile(name string) string {
 	return "testdata/" + name
+}
+
+// Every setting other than foreign_key_checks and unique_checks is reset with the
+// DEFAULT keyword. MySQL accepts `SET var = DEFAULT` for any system variable and rejects
+// the string 'default' for most of them, so the reset must use the keyword for the pool
+// to be able to reuse the connection rather than replace it.
+func TestBuildSettingQueryResetUsesDefaultKeyword(t *testing.T) {
+	parser := vtenv.NewTestEnv().Parser()
+
+	_, resetQuery, err := BuildSettingQuery([]string{"set sql_safe_updates = 1", "set @@session.sql_select_limit = 10"}, parser)
+	require.NoError(t, err)
+	require.Equal(t, "set sql_safe_updates = default, @@sql_select_limit = default", resetQuery)
+}
+
+// MySQL Bug#121262: `SET SESSION foreign_key_checks = DEFAULT` and the same for
+// unique_checks set the session value to the opposite of the global value on every
+// MySQL version, so a `default` reset would hand the next caller a pooled connection
+// with the checks off. The reset restores the global value explicitly instead.
+func TestBuildSettingQueryResetRestoresGlobalForeignKeyAndUniqueChecks(t *testing.T) {
+	parser := vtenv.NewTestEnv().Parser()
+
+	_, resetQuery, err := BuildSettingQuery([]string{"set @@foreign_key_checks = 0, @@session.unique_checks = 0", "set sql_safe_updates = 1"}, parser)
+	require.NoError(t, err)
+	require.Equal(t, "set @@foreign_key_checks = @@global.foreign_key_checks, @@unique_checks = @@global.unique_checks, sql_safe_updates = default", resetQuery)
 }

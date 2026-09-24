@@ -315,6 +315,7 @@ func (e *Executor) StreamExecute(
 	safeSession *econtext.SafeSession,
 	sql string,
 	bindVars map[string]*querypb.BindVariable,
+	prepared bool,
 	callback func(*sqltypes.Result) error,
 ) error {
 	span, ctx := trace.NewSpan(ctx, "executor.StreamExecute")
@@ -404,7 +405,7 @@ func (e *Executor) StreamExecute(
 		return err
 	}
 
-	err = e.newExecute(ctx, mysqlCtx, safeSession, sql, bindVars, false, logStats, resultHandler, srr.storeResultStats)
+	err = e.newExecute(ctx, mysqlCtx, safeSession, sql, bindVars, prepared, logStats, resultHandler, srr.storeResultStats)
 
 	logStats.Error = err
 	saveSessionStats(safeSession, srr.stmtType, srr.rowsAffected, srr.rowsReturned, err)
@@ -1508,13 +1509,29 @@ func (e *Executor) Prepare(ctx context.Context, method string, safeSession *econ
 }
 
 func (e *Executor) prepare(ctx context.Context, safeSession *econtext.SafeSession, sql string, logStats *logstats.LogStats) ([]*querypb.Field, uint16, error) {
-	// Start an implicit transaction if necessary.
-	if !safeSession.Autocommit && !safeSession.InTransaction() {
-		if err := e.txConn.Begin(ctx, safeSession, nil); err != nil {
+	stmtType := sqlparser.Preview(sql)
+	if stmtType == sqlparser.StmtUnknown {
+		// Preview only looks at the first keyword, so statements starting with
+		// a WITH clause come back as unknown. Classify those from the AST, but
+		// only rescue the statements handlePrepare can count parameters for
+		// (WITH ... SELECT/INSERT/REPLACE/UPDATE/DELETE). Anything else stays
+		// unknown and is rejected below, rather than being reported to the
+		// client as a zero-parameter success.
+		stmt, err := e.env.Parser().Parse(sql)
+		if err != nil {
+			// The statement stays unknown, and an unparseable statement is
+			// never SHOW, so record the type and clear warnings the way the
+			// code below does before returning the syntax error.
+			logStats.StmtType = stmtType.String()
+			safeSession.ClearWarnings()
 			return nil, 0, err
 		}
+		switch astType := sqlparser.ASTToStatementType(stmt); astType {
+		case sqlparser.StmtSelect, sqlparser.StmtInsert, sqlparser.StmtReplace,
+			sqlparser.StmtUpdate, sqlparser.StmtDelete:
+			stmtType = astType
+		}
 	}
-	stmtType := sqlparser.Preview(sql)
 	logStats.StmtType = stmtType.String()
 
 	// Mysql warnings are scoped to the current session, but are

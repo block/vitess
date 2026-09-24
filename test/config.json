@@ -191,9 +191,7 @@
       "Manual": false,
       "Shard": "21",
       "Tags": [],
-      "Needs": [
-        "minio"
-      ]
+      "Needs": []
     },
     "backup_s3": {
       "File": "unused.go",
@@ -209,7 +207,7 @@
       "Shard": "21",
       "Tags": [],
       "Needs": [
-        "minio"
+        "microceph"
       ]
     },
     "backup_only": {
@@ -1887,25 +1885,6 @@
         "binlog-compression"
       ]
     },
-    "vreplication_vtctldclient_materialize": {
-      "File": "unused.go",
-      "Packages": [
-        "vitess.io/vitess/go/test/endtoend/vreplication"
-      ],
-      "Args": [
-        "-run",
-        "TestMaterializeVtctldClient"
-      ],
-      "Command": [],
-      "Manual": false,
-      "Shard": "vreplication_partial_movetables_and_materialize",
-      "Tags": [],
-      "Needs": [
-        "larger-runner",
-        "limit-resources",
-        "binlog-compression"
-      ]
-    },
     "vreplication_cellalias": {
       "File": "unused.go",
       "Packages": [
@@ -2181,7 +2160,7 @@
       ],
       "Args": [
         "-run",
-        "TestMultiVStreamsKeyspaceReshard",
+        "TestMultiVStreamsKeyspace",
         "-timeout",
         "15m"
       ],
@@ -2540,7 +2519,7 @@
       ],
       "Args": [
         "-run",
-        "TestLookupIndex"
+        "TestLookupVindex"
       ],
       "Command": [],
       "Manual": false,

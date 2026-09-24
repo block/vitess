@@ -144,7 +144,11 @@ type ConnPool[C Connection] struct {
 	// was pushed, or -1 if no connection with a Setting has been opened in this pool
 	freshSettingsStack atomic.Int64
 	// wait is the list of clients waiting for a connection to be returned to the pool
-	wait waitlist[C]
+	// Held behind a pointer so that growing the waitlist struct cannot
+	// change ConnPool's allocation size: the 128-bit atomics in clean and
+	// settings must stay 16-byte aligned, and the Go allocator only
+	// provides that for certain object sizes (see the connStack docs).
+	wait *waitlist[C]
 
 	// borrowed is the number of connections that the pool has given out to clients
 	// and that haven't been returned yet
@@ -200,6 +204,7 @@ type ConnPool[C Connection] struct {
 // The pool must be ConnPool.Open before it can start giving out connections
 func NewPool[C Connection](config *Config[C]) *ConnPool[C] {
 	pool := &ConnPool[C]{}
+	pool.wait = &waitlist[C]{}
 	pool.config.maxCapacity = config.Capacity
 	pool.config.maxIdleCount = config.MaxIdleCount
 	pool.config.maxLifetime.Store(config.MaxLifetime.Nanoseconds())
@@ -671,7 +676,7 @@ func (pool *ConnPool[C]) getNew(ctx context.Context) (*Pooled[C], error) {
 			return nil, nil
 		}
 
-		if pool.active.CompareAndSwap(open, open+1) {
+		if pool.reserveSlot(open) {
 			conn, err := pool.connNew(ctx)
 			if err != nil {
 				pool.closedConn()
@@ -685,6 +690,22 @@ func (pool *ConnPool[C]) getNew(ctx context.Context) (*Pooled[C], error) {
 			return conn, nil
 		}
 	}
+}
+
+// reserveSlot claims the active slot after open for a new connection. The
+// caller checked open against capacity, but capacity may have dropped since,
+// and a setCapacity drain that already saw active <= capacity would not wait
+// for this slot, so it is given back when it no longer fits. It returns false
+// when the slot was not claimed; the caller then reloads active and capacity.
+func (pool *ConnPool[C]) reserveSlot(open int64) bool {
+	if !pool.active.CompareAndSwap(open, open+1) {
+		return false
+	}
+	if open >= pool.capacity.Load() {
+		pool.closedConn()
+		return false
+	}
+	return true
 }
 
 // get returns a pooled connection with no Setting applied
