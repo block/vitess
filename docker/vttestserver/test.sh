@@ -32,12 +32,17 @@ smoke_test() {
 	echo "Testing ${FLAVOR} on ${platform}"
 	echo "============================================"
 
+	# NOTE: smoke_test is invoked from an `if !` condition below, which disables
+	# errexit for the whole function. Every command whose failure should fail the
+	# test therefore needs an explicit `|| return 1`; otherwise a failed build
+	# would run a stale image, or a failed query would still report PASS.
+
 	echo "--- Building image ---"
 	docker buildx build \
 		--platform="${platform}" \
 		-f "docker/vttestserver/Dockerfile.${FLAVOR}" \
 		-t "${IMAGE_NAME}" \
-		--load . 2>&1 | tail -5
+		--load . 2>&1 | tail -5 || return 1
 
 	echo "--- Starting container ---"
 	cleanup
@@ -50,7 +55,7 @@ smoke_test() {
 		-e MYSQL_BIND_HOST=0.0.0.0 \
 		-p ${VTGATE_PORT}:${VTGATE_PORT} \
 		-p ${VTCOMBO_MYSQL_PORT}:${VTCOMBO_MYSQL_PORT} \
-		"${IMAGE_NAME}" >/dev/null
+		"${IMAGE_NAME}" >/dev/null || return 1
 
 	echo "--- Waiting for vttestserver to be ready (up to ${TIMEOUT}s) ---"
 	for i in $(seq 1 $((TIMEOUT / 2))); do
@@ -74,7 +79,7 @@ smoke_test() {
 		SELECT * FROM test.smoke_test;
 		SHOW VITESS_TABLETS;
 		DROP TABLE test.smoke_test;
-	"
+	" || return 1
 
 	cleanup
 	echo "PASS: ${FLAVOR} on ${platform}"
