@@ -118,7 +118,7 @@ func TestNotificationSystemCrossServerUpdates(t *testing.T) {
 
 	t.Logf("Testing cross-server updates with schema: %s", sharedSchemaName)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
 
 	testPath := "cross_server_test"
@@ -170,7 +170,7 @@ func TestNotificationSystemCrossServerUpdates(t *testing.T) {
 			t.Logf("Server2 successfully received change notification: %s", string(change.Contents))
 			assert.Equal(t, updatedData, change.Contents, "Server2 should receive the updated data from server1")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("No change notification received - binary logging should be enabled")
 	}
 }
@@ -193,7 +193,7 @@ func TestNotificationSystemMultipleWatchers(t *testing.T) {
 
 	t.Logf("Testing multiple watchers with schema: %s", sharedSchemaName)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
 
 	testPath := "multiple_watchers_test"
@@ -250,7 +250,7 @@ func TestNotificationSystemMultipleWatchers(t *testing.T) {
 				t.Logf("Server2 watch error: %v", change.Err)
 				t.Errorf("Unexpected watch error - binary logging should be enabled")
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(waitTimeout):
 			t.Error("Server2 did not receive notification - binary logging should be enabled")
 		}
 	}()
@@ -266,7 +266,7 @@ func TestNotificationSystemMultipleWatchers(t *testing.T) {
 				t.Logf("Server3 watch error: %v", change.Err)
 				t.Errorf("Unexpected watch error - binary logging should be enabled")
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(waitTimeout):
 			t.Error("Server3 did not receive notification - binary logging should be enabled")
 		}
 	}()
@@ -281,7 +281,7 @@ func TestNotificationSystemMultipleWatchers(t *testing.T) {
 	select {
 	case <-done:
 		t.Log("All watchers completed")
-	case <-time.After(10 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Log("Timeout waiting for watchers")
 	}
 }
@@ -300,7 +300,7 @@ func TestNotificationSystemRecursiveWatchers(t *testing.T) {
 
 	t.Logf("Testing recursive watchers with schema: %s", sharedSchemaName)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
 
 	// Create some initial files in a directory structure
@@ -358,7 +358,7 @@ func TestNotificationSystemRecursiveWatchers(t *testing.T) {
 		} else {
 			t.Logf("Recursive watch error: %v", change.Err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Log("No recursive change notification received (may be expected if binary logging not enabled)")
 	}
 }
@@ -426,7 +426,7 @@ func TestNotificationSystemWatcherCleanup(t *testing.T) {
 
 	t.Logf("Testing watcher cleanup with schema: %s", sharedSchemaName)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
 
 	testPath := "watcher_cleanup_test"
@@ -470,7 +470,7 @@ func TestNotificationSystemWatcherCleanup(t *testing.T) {
 	case change := <-changes:
 		assert.NotNil(t, change.Err, "Should receive an error when context is cancelled")
 		assert.True(t, topo.IsErrType(change.Err, topo.Interrupted), "Error should be of type Interrupted")
-	case <-time.After(1 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("Should receive interrupted error when context is cancelled")
 	}
 
@@ -478,7 +478,7 @@ func TestNotificationSystemWatcherCleanup(t *testing.T) {
 	select {
 	case _, ok := <-changes:
 		assert.False(t, ok, "Changes channel should be closed")
-	case <-time.After(1 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("Changes channel should be closed")
 	}
 }
@@ -622,7 +622,7 @@ func TestNotificationSystemIntegration(t *testing.T) {
 	serverC, _, cleanupC := createTestServer(t, sharedSchemaName)
 	defer cleanupC()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
 
 	// Test scenario: ServerA creates data, ServerB and ServerC watch it,
@@ -695,7 +695,7 @@ func TestNotificationSystemIntegration(t *testing.T) {
 				t.Logf("ServerB watch error: %v", change.Err)
 				t.Errorf("Unexpected watch error - binary logging should be enabled")
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(waitTimeout):
 			t.Error("ServerB did not receive notification - binary logging should be enabled")
 		}
 	}()
@@ -711,7 +711,7 @@ func TestNotificationSystemIntegration(t *testing.T) {
 				t.Logf("ServerC watch error: %v", change.Err)
 				t.Errorf("Unexpected watch error - binary logging should be enabled")
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(waitTimeout):
 			t.Error("ServerC did not receive cross-server notification - binary logging should be enabled")
 		}
 	}()
@@ -728,7 +728,7 @@ func TestNotificationSystemIntegration(t *testing.T) {
 		t.Log("✅ Integration test completed successfully")
 		t.Log("✅ Verified that independent notification systems sharing the same schema")
 		t.Log("✅ can receive updates across each other")
-	case <-time.After(10 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Log("⚠️  Timeout waiting for notifications (may be expected if binary logging not enabled)")
 		t.Log("✅ However, the notification system structure and sharing is working correctly")
 	}
@@ -749,7 +749,7 @@ func TestNotificationSystemReconnection(t *testing.T) {
 
 	t.Logf("Testing notification system reconnection with schema: %s", schemaName)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
 
 	// Create initial test data
@@ -806,7 +806,7 @@ func TestNotificationSystemReconnection(t *testing.T) {
 			require.NoError(t, change.Err, "Should not receive an error on watch after reconnection")
 			assert.Equal(t, updateData, change.Contents, "Should receive updated data after reconnection")
 			assert.Equal(t, newVersion, change.Version, "Should receive correct version after reconnection")
-		case <-time.After(10 * time.Second):
+		case <-time.After(waitTimeout):
 			t.Error("no notification received")
 		}
 	}
@@ -898,7 +898,7 @@ func TestDeadNotificationSystemRefusesWatchers(t *testing.T) {
 func requireWatchDelivers(t *testing.T, changes <-chan *topo.WatchData, update func()) {
 	t.Helper()
 
-	deadline := time.After(15 * time.Second)
+	deadline := time.After(waitTimeout)
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
 	update()
@@ -949,7 +949,7 @@ func TestWatchSurvivesSiblingFailedAcquisitionClose(t *testing.T) {
 	sibling, err := NewServer(cfg.FormatDSN(), "/test")
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
 
 	// The failed acquisition must happen while no notification system exists
@@ -1013,7 +1013,7 @@ func TestWatchReacquiresAfterNotificationSystemDeath(t *testing.T) {
 	server, _, cleanup := createTestServer(t, schemaName)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
 
 	testPath := "reacquire_test"
@@ -1034,13 +1034,13 @@ func TestWatchReacquiresAfterNotificationSystemDeath(t *testing.T) {
 	case wd := <-changes:
 		require.Error(t, wd.Err, "a dead notification system must error its watches")
 		require.True(t, topo.IsErrType(wd.Err, topo.Interrupted), "watch teardown must deliver Interrupted")
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("watch was not cancelled by the notification system's death")
 	}
 	select {
 	case _, ok := <-changes:
 		require.False(t, ok, "watch channel must be closed after the final error")
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("watch channel was not closed after the final error")
 	}
 
@@ -1074,7 +1074,7 @@ func TestStaleClaimReleaseDoesNotDrainSuccessor(t *testing.T) {
 	serverB, _, cleanupB := createTestServer(t, schemaName)
 	defer cleanupB()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
 	defer cancel()
 
 	testPath := "stale_claim_test"

@@ -25,6 +25,7 @@ import (
 	"os"
 	"path"
 	"testing"
+	"time"
 
 	"github.com/block/mysql"
 	"github.com/stretchr/testify/require"
@@ -33,6 +34,21 @@ import (
 	"vitess.io/vitess/go/vt/log"
 	vttestpb "vitess.io/vitess/go/vt/proto/vttest"
 	"vitess.io/vitess/go/vt/vttest"
+)
+
+const (
+	// waitTimeout bounds a test that is waiting for an asynchronous event it
+	// expects to happen. CI runners are frequently resource starved and pause
+	// for multiple seconds at a time, so this is deliberately generous: it
+	// only lengthens runs that are already going to fail. Assertions that an
+	// event does *not* happen use their own, much shorter, bound.
+	waitTimeout = 30 * time.Second
+
+	// testTimeout bounds a whole test. It must stay comfortably above
+	// waitTimeout, otherwise the enclosing context expires first and the
+	// failure is reported as a context error instead of naming the event the
+	// test was waiting for.
+	testTimeout = 2 * time.Minute
 )
 
 var (

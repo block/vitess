@@ -113,7 +113,7 @@ func TestLockAcquiredAfterWaitIsNotBornExpired(t *testing.T) {
 	var res result
 	select {
 	case res = <-acquired:
-	case <-time.After(10 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("blocking lock acquisition did not complete")
 	}
 	require.NoError(t, res.err)
@@ -168,7 +168,7 @@ func TestUnconditionalUpdateVersionsAreDistinct(t *testing.T) {
 		case v := <-versions:
 			require.False(t, seen[v], "two unconditional updates produced the same version %d", v)
 			seen[v] = true
-		case <-time.After(30 * time.Second):
+		case <-time.After(waitTimeout):
 			t.Fatal("timed out waiting for concurrent updates")
 		}
 	}

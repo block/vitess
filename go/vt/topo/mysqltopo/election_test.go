@@ -84,7 +84,7 @@ func TestLeadershipTransfer(t *testing.T) {
 	select {
 	case <-leaderCtx1.Done():
 		// Good, context was cancelled
-	case <-time.After(1 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Error("context was expected to be cancelled")
 	}
 }
@@ -124,7 +124,7 @@ func TestWaitForNewLeader(t *testing.T) {
 	select {
 	case leaderID := <-leaderCh:
 		require.Equal(t, "leader-1", leaderID, "Expected leader-1, got %q", leaderID)
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Errorf("Timeout waiting for first leader notification")
 	}
 
@@ -145,7 +145,7 @@ func TestWaitForNewLeader(t *testing.T) {
 	select {
 	case leaderID := <-leaderCh:
 		require.Equal(t, "leader-2", leaderID, "Expected leader-2, got %q", leaderID)
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Errorf("Timeout waiting for second leader notification")
 	}
 }
@@ -170,7 +170,7 @@ func TestLeaderParticipationStop(t *testing.T) {
 	select {
 	case <-leaderCtx.Done():
 		// Good, context was cancelled
-	case <-time.After(1 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Errorf("Leadership context was not cancelled after Stop()")
 	}
 
@@ -331,7 +331,7 @@ func TestLeadershipRenewal(t *testing.T) {
 	select {
 	case <-leaderCtx.Done():
 		// Good, context was cancelled due to failed renewal
-	case <-time.After(2 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Error("Leadership context should be cancelled when renewal fails")
 	}
 
