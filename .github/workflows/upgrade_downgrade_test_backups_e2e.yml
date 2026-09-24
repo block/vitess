@@ -1,12 +1,8 @@
 name: Backups - E2E - Upgrade Downgrade Testing
+# This fork does not use Vitess backups, so this workflow is manual-dispatch
+# only. Restore the push/pull_request triggers below to re-enable it.
 on:
-  push:
-    branches:
-      - "main"
-      - "release-[0-9]+.[0-9]"
-    tags: '**'
-  pull_request:
-    branches: '**'
+  workflow_dispatch:
 
 concurrency:
   group: format('{0}-{1}', ${{ github.ref }}, 'Upgrade Downgrade Testing - Backups - E2E')
