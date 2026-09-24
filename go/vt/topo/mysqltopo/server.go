@@ -410,7 +410,7 @@ func schemaStatements() []string {
 		// Drop the file's leading `--` comment lines so each statement is
 		// handed to the driver on its own.
 		var body []string
-		for _, line := range strings.Split(chunk, "\n") {
+		for line := range strings.SplitSeq(chunk, "\n") {
 			if !strings.HasPrefix(strings.TrimSpace(line), "--") {
 				body = append(body, line)
 			}
