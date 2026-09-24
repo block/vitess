@@ -1122,3 +1122,65 @@ func TestStaleClaimReleaseDoesNotDrainSuccessor(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
+
+// TestWatchIsStreamingBeforeItReturns pins the ordering that makes a single
+// write after Watch() observable at all.
+//
+// The notification system learns about changes from a binlog dump, and it
+// establishes its baseline (knownKeys) separately, before that dump starts.
+// A write committed between those two points is in neither: it is after the
+// baseline snapshot, so it is not part of what the system already knows, and
+// it is before the dump's start position, so it produces no event. Nothing
+// ever reports it. Because checkForTopoDataChanges only runs when an event
+// arrives, a watcher that sees no further write starves indefinitely.
+//
+// Watch() must therefore not return until the dump is streaming. Anything
+// committed before that point is covered by Watch's own read of the current
+// value, and anything committed after it lands in the stream.
+func TestWatchIsStreamingBeforeItReturns(t *testing.T) {
+	sharedSchemaName := generateRandomSchemaName()
+
+	writer, _, cleanupWriter := createTestServer(t, sharedSchemaName)
+	defer cleanupWriter()
+
+	watcherServer, _, cleanupWatcher := createTestServer(t, sharedSchemaName)
+	defer cleanupWatcher()
+
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+
+	testPath := "streaming_before_return"
+	version, err := writer.Create(ctx, testPath, []byte("initial data"))
+	require.NoError(t, err)
+
+	// This is the call that brings the notification system up, since no
+	// other watch exists on this schema yet.
+	current, changes, err := watcherServer.Watch(ctx, testPath)
+	require.NoError(t, err)
+	require.Equal(t, []byte("initial data"), current.Contents)
+
+	// lastPosition is set as soon as the binlog dump has been started, and
+	// stays zero until then, so it is the observable form of "the change
+	// feed is live".
+	ns, err := watcherServer.getNotificationSystemForServer()
+	require.NoError(t, err)
+	ns.lastPositionMu.Lock()
+	position := ns.lastPosition
+	ns.lastPositionMu.Unlock()
+	require.False(t, position.IsZero(),
+		"Watch returned before the binlog dump was streaming: a write landing now would be delivered to nobody")
+
+	// One write, no grace period. This is the case that starves when the
+	// feed is not yet live.
+	updated := []byte("written immediately after Watch returned")
+	_, err = writer.Update(ctx, testPath, updated, version)
+	require.NoError(t, err)
+
+	select {
+	case change := <-changes:
+		require.NoError(t, change.Err, "watch delivered an error instead of the update")
+		require.Equal(t, updated, change.Contents)
+	case <-time.After(waitTimeout):
+		t.Fatal("a write made immediately after Watch returned was never delivered")
+	}
+}

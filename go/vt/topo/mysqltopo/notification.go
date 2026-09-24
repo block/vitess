@@ -95,6 +95,24 @@ type notificationSystem struct {
 	// is replaced in acquireNotificationSystem, and again when its last
 	// stale reference is released.
 	closeOnce sync.Once
+
+	// streaming reports the outcome of bringing the binlog dump up: nil once
+	// it is streaming, or the error run() gave up with. init() blocks on it,
+	// so no caller is handed a notification system whose change feed is not
+	// live yet. Buffered and sent exactly once, so run() never blocks on it
+	// and a later reader still sees the result.
+	streaming     chan error
+	streamingOnce sync.Once
+}
+
+// signalStreaming publishes the outcome of starting the binlog dump to
+// whoever is waiting in init(). Only the first call is reported: run()
+// reconnects over the life of the system, and those later attempts say
+// nothing about the startup that init() is waiting on.
+func (ns *notificationSystem) signalStreaming(err error) {
+	ns.streamingOnce.Do(func() {
+		ns.streaming <- err
+	})
 }
 
 // watcher represents a single file watch.
@@ -292,6 +310,7 @@ func newNotificationSystem(schemaName, serverAddr string) (*notificationSystem, 
 		knownKeys:         make(map[string]int64),
 		ctx:               ctx,
 		cancel:            cancel,
+		streaming:         make(chan error, 1),
 	}
 
 	// Initialize the binlog connection
@@ -304,26 +323,42 @@ func newNotificationSystem(schemaName, serverAddr string) (*notificationSystem, 
 	return ns, nil
 }
 
-// init initializes the notification system.
-func (ns *notificationSystem) init() error {
-	// Create the binlog connection using Vitess binlog library
-	var err error
-	ns.binlogConn, err = binlog.NewBinlogConnection(ns.connector)
-	if err != nil {
-		return fmt.Errorf("failed to create binlog connection: %v", err)
-	}
+// streamingStartTimeout bounds how long init() waits for the binlog dump to
+// come up. run() retries a failed start with exponential backoff before it
+// gives up, so this sits above that budget: it is a backstop against a start
+// that hangs rather than fails, not the normal failure path.
+const streamingStartTimeout = 60 * time.Second
 
+// init initializes the notification system.
+//
+// It does not return until the binlog dump is streaming. Returning earlier
+// would hand the caller a system with a baseline (knownKeys) already taken
+// but no change feed behind it yet, and a write committed in that window is
+// reported by neither: it is not in the baseline, and it is before the
+// dump's start position. Since checkForTopoDataChanges only runs when an
+// event arrives, such a write is never delivered at all, and a watcher that
+// sees no later write starves indefinitely.
+func (ns *notificationSystem) init() error {
 	// Initialize the known keys cache with current data to avoid sending
 	// notifications for existing data when watchers are first created
 	if err := ns.initializeKnownKeys(); err != nil {
 		return fmt.Errorf("failed to initialize known keys: %v", err)
 	}
 
-	// Start the replication goroutine
+	// Start the replication goroutine. It owns the binlog connection for the
+	// whole life of the system, including reconnects.
 	ns.wg.Add(1)
 	go ns.run()
 
-	return nil
+	select {
+	case err := <-ns.streaming:
+		if err != nil {
+			return fmt.Errorf("failed to start binlog streaming: %v", err)
+		}
+		return nil
+	case <-time.After(streamingStartTimeout):
+		return fmt.Errorf("binlog streaming did not start within %v", streamingStartTimeout)
+	}
 }
 
 // initializeKnownKeys populates the known keys cache with current data
@@ -370,6 +405,10 @@ func (ns *notificationSystem) run() {
 		if ns.binlogConn != nil {
 			ns.binlogConn.Close()
 		}
+		// Whatever brought the loop down, init() must not be left waiting.
+		// Only meaningful on the paths that exit before the dump ever
+		// started; once it has, signalStreaming is already spent.
+		ns.signalStreaming(errors.New("notification system stopped before the binlog dump started"))
 	}()
 
 	log.Info("Starting MySQL notification system", slog.String("schema", ns.schemaName))
@@ -471,6 +510,11 @@ func (ns *notificationSystem) run() {
 
 		// Reset retry count on successful connection
 		retryCount = 0
+
+		// The dump is live and lastPosition is set, so anything committed
+		// from here on reaches processEventStream. Release init(), which has
+		// been holding its caller back until exactly this point.
+		ns.signalStreaming(nil)
 
 		// Process events from the binlog stream
 		// This function is blocking, and continues to loop
