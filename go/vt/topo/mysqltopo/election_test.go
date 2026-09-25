@@ -19,7 +19,6 @@ package mysqltopo
 import (
 	"context"
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -53,11 +52,30 @@ func TestLeadershipTransfer(t *testing.T) {
 	require.NoError(t, err)
 	defer lp2.Stop()
 
-	// Second participant should fail to get leadership initially (first participant is leader)
-	leaderCtx2, waitErr := lp2.WaitForLeadership()
-	require.Error(t, waitErr, "Expected error when trying to get leadership while someone else is leader")
-	require.True(t, topo.IsErrType(waitErr, topo.NoNode), "Expected NoNode error, got: %v", waitErr)
-	require.Nil(t, leaderCtx2, "Expected nil context when leadership acquisition fails")
+	// The topo.LeaderParticipation contract makes WaitForLeadership wait until
+	// the caller is the primary, so the second participant campaigns in the
+	// background. Candidates only ever call it once, and which of two
+	// simultaneous candidates wins is down to goroutine scheduling, so a
+	// participant that loses has to stay in the running rather than report
+	// that someone else holds the election.
+	type attempt struct {
+		leaderCtx context.Context
+		err       error
+	}
+	attempts := make(chan attempt, 1)
+	go func() {
+		ctx, err := lp2.WaitForLeadership()
+		attempts <- attempt{leaderCtx: ctx, err: err}
+	}()
+
+	// While participant-1 holds the election, participant-2 must still be
+	// waiting. This asserts that something does *not* happen, so it uses its
+	// own short bound rather than waitTimeout.
+	select {
+	case a := <-attempts:
+		t.Fatalf("WaitForLeadership() returned while participant-1 still held the election: ctx=%v err=%v", a.leaderCtx, a.err)
+	case <-time.After(500 * time.Millisecond):
+	}
 
 	// First participant should still be leader
 	leaderID, err = lp1.GetCurrentLeaderID(t.Context())
@@ -67,13 +85,14 @@ func TestLeadershipTransfer(t *testing.T) {
 	// Stop first participant (leadership transfer)
 	lp1.Stop()
 
-	// Wait a moment for the leadership to be released
-	time.Sleep(200 * time.Millisecond)
-
 	// Now second participant should be able to get leadership
-	leaderCtx2, waitErr = lp2.WaitForLeadership()
-	require.NoError(t, waitErr, "Expected second participant to get leadership after first stopped")
-	require.NotNil(t, leaderCtx2, "Expected non-nil leadership context")
+	select {
+	case a := <-attempts:
+		require.NoError(t, a.err, "Expected second participant to get leadership after first stopped")
+		require.NotNil(t, a.leaderCtx, "Expected non-nil leadership context")
+	case <-time.After(waitTimeout):
+		t.Fatal("participant-2 never became leader after participant-1 stopped")
+	}
 
 	// Verify second participant is now leader
 	leaderID, err = lp2.GetCurrentLeaderID(t.Context())
@@ -150,6 +169,42 @@ func TestWaitForNewLeader(t *testing.T) {
 	}
 }
 
+// TestWaitForLeadershipInterruptedByStop pins the other half of the contract:
+// if Stop is called, WaitForLeadership returns ErrInterrupted rather than
+// waiting forever for an election it has given up on.
+func TestWaitForLeadershipInterruptedByStop(t *testing.T) {
+	server, _, cleanup := createTestServer(t, "")
+	defer cleanup()
+
+	electionName := "test-wait-interrupted"
+
+	lp1, err := server.NewLeaderParticipation(electionName, "leader-1")
+	require.NoError(t, err, "NewLeaderParticipation() error for leader-1")
+	defer lp1.Stop()
+
+	_, err = lp1.WaitForLeadership()
+	require.NoError(t, err, "leader-1 could not become the leader")
+
+	lp2, err := server.NewLeaderParticipation(electionName, "leader-2")
+	require.NoError(t, err, "NewLeaderParticipation() error for leader-2")
+
+	errs := make(chan error, 1)
+	go func() {
+		_, err := lp2.WaitForLeadership()
+		errs <- err
+	}()
+
+	lp2.Stop()
+
+	select {
+	case err := <-errs:
+		require.True(t, topo.IsErrType(err, topo.Interrupted),
+			"expected topo.Interrupted after Stop(), got %v", err)
+	case <-time.After(waitTimeout):
+		t.Fatal("WaitForLeadership() did not return after Stop()")
+	}
+}
+
 func TestLeaderParticipationStop(t *testing.T) {
 	server, _, cleanup := createTestServer(t, "")
 	defer cleanup()
@@ -207,40 +262,46 @@ func TestConcurrentElections(t *testing.T) {
 		}
 	}
 
-	// All participants try to become leader concurrently
-	var wg sync.WaitGroup
-	results := make([]struct {
+	// All participants campaign concurrently. WaitForLeadership waits until the
+	// caller is the primary, so only the winner of each election reports back
+	// here; the losers stay in the running until the deferred Stop()s above
+	// release them.
+	type won struct {
 		electionIdx    int
 		participantIdx int
-		leaderCtx      context.Context
-		err            error
-	}, len(allParticipants))
+	}
+	winners := make(chan won, len(allParticipants))
 
 	for i, lp := range allParticipants {
-		wg.Add(1)
 		go func(idx int, participant topo.LeaderParticipation) {
-			defer wg.Done()
-			electionIdx := idx / numParticipantsPerElection
-			participantIdx := idx % numParticipantsPerElection
-
 			ctx, err := participant.WaitForLeadership()
-			results[idx] = struct {
-				electionIdx    int
-				participantIdx int
-				leaderCtx      context.Context
-				err            error
-			}{electionIdx, participantIdx, ctx, err}
+			if err != nil || ctx == nil {
+				return
+			}
+			winners <- won{
+				electionIdx:    idx / numParticipantsPerElection,
+				participantIdx: idx % numParticipantsPerElection,
+			}
 		}(i, lp)
 	}
 
-	wg.Wait()
-
-	// Verify each election has exactly one leader
+	// Every election must produce a leader.
 	leadersByElection := make(map[int]int) // election -> number of leaders
-	for _, result := range results {
-		if result.err == nil && result.leaderCtx != nil {
-			leadersByElection[result.electionIdx]++
+	for range numElections {
+		select {
+		case w := <-winners:
+			leadersByElection[w.electionIdx]++
+		case <-time.After(waitTimeout):
+			t.Fatalf("only %d of %d elections produced a leader", len(leadersByElection), numElections)
 		}
+	}
+
+	// And no election may produce a second one. This asserts that something
+	// does *not* happen, so it uses its own short bound.
+	select {
+	case w := <-winners:
+		t.Fatalf("election %d produced a second leader (participant %d)", w.electionIdx, w.participantIdx)
+	case <-time.After(500 * time.Millisecond):
 	}
 
 	for electionIdx := range numElections {

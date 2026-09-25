@@ -32,6 +32,12 @@ import (
 // able to block process shutdown.
 const electionCleanupTimeout = 5 * time.Second
 
+// leadershipRetryInterval is how often a waiting candidate re-campaigns. It
+// sets the floor on failover latency, so it is well below electionTTL: the
+// outgoing leader normally deletes its record on Stop(), and the next
+// campaign after that wins.
+const leadershipRetryInterval = 500 * time.Millisecond
+
 // MySQLLeaderParticipation implements topo.LeaderParticipation for MySQL.
 type MySQLLeaderParticipation struct {
 	server   *Server
@@ -75,52 +81,69 @@ func (s *Server) NewLeaderParticipation(name, id string) (topo.LeaderParticipati
 }
 
 // WaitForLeadership is part of the topo.LeaderParticipation interface.
+//
+// The interface requires this to wait until this process is the primary, so a
+// losing attempt is retried rather than reported. Candidates only ever call it
+// once: returning "someone else holds it" would strand them, and which of two
+// simultaneous candidates wins is a matter of goroutine scheduling. The only
+// ways out are winning the election, Stop(), or the server shutting down.
 func (lp *MySQLLeaderParticipation) WaitForLeadership() (context.Context, error) {
-	lp.mu.Lock()
+	ticker := time.NewTicker(leadershipRetryInterval)
+	defer ticker.Stop()
 
-	if lp.stopped {
-		lp.mu.Unlock()
-		return nil, topo.NewError(topo.Interrupted, lp.name)
-	}
-
-	// If we're already the leader, return the existing context
-	if lp.isLeader && lp.leaderCtx != nil {
-		ctx := lp.leaderCtx
-		lp.mu.Unlock()
-		return ctx, nil
-	}
-	lp.mu.Unlock()
-
-	// Try to become leader immediately - fail fast if we can't
-	if lp.tryBecomeLeader() {
+	for {
 		lp.mu.Lock()
-		if !lp.isLeader {
-			lp.isLeader = true
-			lp.leaderCtx, lp.leaderCancel = context.WithCancel(lp.ctx)
+
+		if lp.stopped {
+			lp.mu.Unlock()
+			return nil, topo.NewError(topo.Interrupted, lp.name)
 		}
-		ctx := lp.leaderCtx
+
+		// If we're already the leader, return the existing context
+		if lp.isLeader && lp.leaderCtx != nil {
+			ctx := lp.leaderCtx
+			lp.mu.Unlock()
+			return ctx, nil
+		}
 		lp.mu.Unlock()
 
-		// Start heartbeat to maintain leadership
-		lp.wg.Add(1)
-		go lp.maintainLeadership()
-		return ctx, nil
-	}
+		if lp.tryBecomeLeader() {
+			lp.mu.Lock()
 
-	// If we can't become leader immediately, check if someone else is already leader
-	currentLeader, err := lp.GetCurrentLeaderID(lp.ctx)
-	if err != nil {
-		return nil, err
-	}
-	if currentLeader != "" && currentLeader != lp.id {
-		// Someone else is already the leader - fail fast like etcd does
-		return nil, topo.NewError(topo.NoNode, "leadership already held by "+currentLeader)
-	}
+			// Stop() may have landed while tryBecomeLeader was in flight. Its
+			// delete can have run before our insert, so give the record back
+			// rather than leave it to expire, and report the interruption
+			// instead of handing out a leadership context derived from an
+			// already-cancelled lp.ctx.
+			if lp.stopped {
+				lp.mu.Unlock()
+				lp.deleteElectionRecord("stopped while acquiring leadership")
+				return nil, topo.NewError(topo.Interrupted, lp.name)
+			}
 
-	// No current leader, but we couldn't acquire it immediately
-	// This could be due to database contention or other transient issues
-	// Fail fast rather than retrying - the caller can retry if needed
-	return nil, topo.NewError(topo.NoNode, "unable to acquire leadership")
+			if !lp.isLeader {
+				lp.isLeader = true
+				lp.leaderCtx, lp.leaderCancel = context.WithCancel(lp.ctx)
+
+				// Start the heartbeat that maintains leadership. This is inside
+				// the guard so that a second caller arriving on an existing
+				// leadership does not start a second one.
+				lp.wg.Add(1)
+				go lp.maintainLeadership()
+			}
+			ctx := lp.leaderCtx
+			lp.mu.Unlock()
+			return ctx, nil
+		}
+
+		// Someone else holds the election, or the attempt failed transiently.
+		// Wait and campaign again.
+		select {
+		case <-lp.ctx.Done():
+			return nil, topo.NewError(topo.Interrupted, lp.name)
+		case <-ticker.C:
+		}
+	}
 }
 
 // Stop is part of the topo.LeaderParticipation interface.
