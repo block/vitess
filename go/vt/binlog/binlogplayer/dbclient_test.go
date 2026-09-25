@@ -20,10 +20,34 @@ import (
 	"net"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vitess.io/vitess/go/constants/sidecar"
 	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/sqlparser"
 )
+
+func TestNewDBClientWithSidecarName(t *testing.T) {
+	parser := sqlparser.NewTestParser()
+	var params dbconfigs.Connector
+
+	t.Run("default name returns dbClientImpl", func(t *testing.T) {
+		client := NewDBClientWithSidecarName(params, parser, sidecar.DefaultName)
+		_, ok := client.(*dbClientImpl)
+		assert.True(t, ok, "expected *dbClientImpl for default sidecar name")
+	})
+
+	t.Run("custom name returns dbClientImplWithSidecarDBReplacement", func(t *testing.T) {
+		client := NewDBClientWithSidecarName(params, parser, "_vt_custom_0")
+		impl, ok := client.(*dbClientImplWithSidecarDBReplacement)
+		assert.True(t, ok, "expected *dbClientImplWithSidecarDBReplacement for custom sidecar name")
+		if ok {
+			assert.Equal(t, "_vt_custom_0", impl.sidecarDBName)
+		}
+	})
+}
 
 // TestSetMultiStatementsOnAClosedConnection covers what a dead connection
 // remembers. Closing it leaves the capability it negotiated on record, so a
