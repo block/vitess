@@ -656,6 +656,52 @@ func (ns *notificationSystem) processEvent(ev mysql.BinlogEvent) error {
 	return nil
 }
 
+// topoDataReadWaitTimeout bounds how long a scan waits for its connection's
+// view to catch up with the binlog stream. Reaching it means the two have
+// diverged by more than any commit-visibility gap explains, so the scan is
+// abandoned and the stream restarted rather than allowed to read stale data.
+// A var so tests can shorten it.
+var topoDataReadWaitTimeout = 30 * time.Second
+
+// waitForReadView blocks until this connection can see everything the binlog
+// stream has already handed us, so that a scan taken afterwards is guaranteed
+// to include the write whose event triggered it.
+//
+// lastPosition is advanced from the GTID event that opens a transaction, and
+// that event precedes the row events it describes, so by the time a row event
+// is processed lastPosition already names the transaction being processed.
+// Waiting for it is therefore exactly the guarantee the scan needs.
+func (ns *notificationSystem) waitForReadView() error {
+	ns.lastPositionMu.Lock()
+	pos := ns.lastPosition
+	ns.lastPositionMu.Unlock()
+
+	if pos.IsZero() || pos.GTIDSet == nil {
+		// Nothing has been streamed yet, so there is no write to wait for.
+		return nil
+	}
+
+	// Only whole seconds are supported, and 0 means "wait forever" — which
+	// would let an unreachable position hang the single goroutine that
+	// services every watcher.
+	timeoutSeconds := max(int(topoDataReadWaitTimeout.Seconds()), 1)
+
+	var state sql.NullInt64
+	if err := ns.db.QueryRowContext(ns.ctx,
+		"SELECT WAIT_FOR_EXECUTED_GTID_SET(?, ?)", pos.GTIDSet.String(), timeoutSeconds,
+	).Scan(&state); err != nil {
+		return fmt.Errorf("failed to wait for the topo_data read view to reach %v: %v", pos, err)
+	}
+
+	// 0 means the set has been executed. 1 means the wait timed out. NULL is
+	// returned when the wait is interrupted, which is no more a guarantee
+	// than a timeout is.
+	if state.Valid && state.Int64 == 0 {
+		return nil
+	}
+	return fmt.Errorf("timed out waiting for the topo_data read view to reach %v", pos)
+}
+
 // checkForTopoDataChanges polls the topo_data table for recent changes.
 // based on a notification from processEvent that there is a likely change.
 // We don't know of what the change is, it might be unrelated.
@@ -664,6 +710,18 @@ func (ns *notificationSystem) processEvent(ev mysql.BinlogEvent) error {
 // than read the stream because there are no staleness issues,
 // particularly if there is a path updated twice in quick succession.
 func (ns *notificationSystem) checkForTopoDataChanges() error {
+	// The scan below has to see the write that produced the event we are
+	// reacting to. It is not free to assume it does: MySQL writes the binlog
+	// during the commit's flush stage, so the dump thread can deliver the
+	// event before the engine commit makes the row visible to this
+	// connection. Scanning inside that window reads the previous version,
+	// advances knownKeys to it and notifies watchers with stale contents —
+	// and because nothing re-scans on its own, the change is never reported
+	// at all and the watcher starves.
+	if err := ns.waitForReadView(); err != nil {
+		return err
+	}
+
 	// Query all current data from topo_data table
 	rows, err := ns.db.QueryContext(ns.ctx, "SELECT path, data, version FROM topo_data")
 	if err != nil {

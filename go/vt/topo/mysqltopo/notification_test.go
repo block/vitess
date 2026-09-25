@@ -60,6 +60,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vitess.io/vitess/go/mysql/replication"
 	"vitess.io/vitess/go/vt/topo"
 )
 
@@ -1183,4 +1184,48 @@ func TestWatchIsStreamingBeforeItReturns(t *testing.T) {
 	case <-time.After(waitTimeout):
 		t.Fatal("a write made immediately after Watch returned was never delivered")
 	}
+}
+
+// TestCheckForTopoDataChangesWaitsForReadView pins the read-view guarantee.
+//
+// checkForTopoDataChanges only ever runs because a binlog event arrived, and
+// it advances knownKeys to whatever its scan returns. MySQL writes the binlog
+// during the commit's flush stage, so the dump thread can hand us the event
+// before the engine commit makes the row visible to other sessions. A scan
+// that runs in that window records the *old* version and notifies watchers
+// with the old contents — and since no further event will arrive for that
+// path, the change is lost for good and the watcher starves.
+//
+// So the scan must not run against a view older than the position the stream
+// has reached. Point lastPosition at a position the server will never execute
+// and the scan has to refuse to run rather than return stale data.
+func TestCheckForTopoDataChangesWaitsForReadView(t *testing.T) {
+	server, _, cleanup := createTestServer(t, "")
+	defer cleanup()
+
+	ns, err := server.getNotificationSystemForServer()
+	require.NoError(t, err)
+
+	original := topoDataReadWaitTimeout
+	t.Cleanup(func() { topoDataReadWaitTimeout = original })
+	topoDataReadWaitTimeout = time.Second
+
+	var serverUUID string
+	require.NoError(t, ns.db.QueryRowContext(t.Context(), "SELECT @@global.server_uuid").Scan(&serverUUID))
+
+	unreachable, err := replication.ParsePosition(replication.Mysql56FlavorID, serverUUID+":1-999999999")
+	require.NoError(t, err)
+
+	ns.lastPositionMu.Lock()
+	ns.lastPosition = unreachable
+	ns.lastPositionMu.Unlock()
+
+	start := time.Now()
+	err = ns.checkForTopoDataChanges()
+	elapsed := time.Since(start)
+
+	require.ErrorContains(t, err, "read view",
+		"the scan must refuse to run when its view cannot be shown to cover the stream position")
+	require.GreaterOrEqual(t, elapsed, topoDataReadWaitTimeout,
+		"the scan returned before it could have waited for the position")
 }
