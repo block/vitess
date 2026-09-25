@@ -68,7 +68,7 @@ jobs:
     runs-on: ${{ needs.changes.outputs.examples == 'true' && !contains(github.event.pull_request.labels.*.name, 'Skip CI') && (github.repository == 'vitessio/vitess' && 'oracle-vm-16cpu-64gb-x86-64' || 'ubuntu-24.04') || 'ubuntu-24.04' }}
     strategy:
       matrix:
-        topo: [etcd, zk2]
+        topo: [etcd, zk2, mysql]
 
     steps:
     - name: Harden the runner (Audit all outbound calls)

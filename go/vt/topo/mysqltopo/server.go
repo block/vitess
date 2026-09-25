@@ -1,0 +1,640 @@
+/*
+Copyright 2025 The Vitess Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+/*
+Package mysqltopo implements topo.Server with MySQL as the backend.
+
+We expect the following behavior from the MySQL database:
+
+  - The topo schema is created explicitly via CreateSchema (during cluster
+    bootstrap); opening a server with NewServer never creates tables.
+  - Transactions are used to ensure consistency.
+  - MySQL replication is used for change notifications (no polling).
+  - Clients connect as MySQL replicas to receive real-time changes.
+
+We follow these conventions within this package:
+
+  - Call convertError(err) on any errors returned from the MySQL driver.
+    Functions defined in this package can be assumed to have already converted
+    errors as necessary.
+  - Use MySQL AUTO_INCREMENT for versioning.
+  - Store topology data in JSON format in MEDIUMBLOB columns.
+*/
+package mysqltopo
+
+import (
+	"context"
+	"database/sql"
+	_ "embed"
+	"errors"
+	"fmt"
+	"log/slog"
+	"path"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	// Block's fork of go-sql-driver/mysql, registered as "block-mysql". strata
+	// links the fork for capabilities upstream does not carry; this package
+	// follows so that every *sql.DB it opens is served by the same driver whose
+	// *mysql.MySQLError type convertError below asserts on. That is a statement
+	// about this package, not about the binary: elsewhere in the repo, end-to-end
+	// tests still import upstream, and an error crossing from one of those would
+	// not match the assertion.
+	"github.com/block/mysql"
+	"github.com/spf13/pflag"
+
+	"vitess.io/vitess/go/mysql/sqlerror"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/servenv"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/utils"
+)
+
+const (
+	// driverName is the database/sql driver every connection in this package is
+	// opened with. It has to be block/mysql's registered name and not upstream's
+	// "mysql": convertError asserts on block/mysql's *mysql.MySQLError, and a
+	// *sql.DB opened with a different driver would return a type that assertion
+	// silently misses.
+	driverName = "block-mysql"
+
+	// DefaultSchema is the default database schema name for MySQL topo
+	DefaultSchema = "topo"
+
+	// DefaultLockTTL is the default TTL for locks in seconds
+	DefaultLockTTL = 30
+
+	// DefaultElectionTTL is the default TTL for elections in seconds
+	DefaultElectionTTL = 30
+)
+
+var (
+	lockTTL     = DefaultLockTTL
+	electionTTL = DefaultElectionTTL
+)
+
+// Factory is the mysql topo.Factory implementation.
+type Factory struct{}
+
+// HasGlobalReadOnlyCell is part of the topo.Factory interface.
+// For MySQL topo, all cells share the same database connection, so we return true.
+// This prevents Vitess from trying to create separate connections per cell using
+// the ServerAddress from CellInfo (which doesn't contain credentials).
+func (f Factory) HasGlobalReadOnlyCell(serverAddr, root string) bool {
+	return true
+}
+
+// Create is part of the topo.Factory interface.
+func (f Factory) Create(cell, serverAddr, root string) (topo.Conn, error) {
+	return NewServer(serverAddr, root)
+}
+
+// Server is the implementation of topo.Server for MySQL.
+type Server struct {
+	// db is the MySQL database connection
+	db *sql.DB
+
+	// root is the root path for this client
+	root string
+
+	// serverAddr is the MySQL server address
+	serverAddr string
+
+	// schemaName is the database schema name
+	schemaName string
+
+	// mu protects the server state
+	mu sync.RWMutex
+
+	// closed indicates if the server has been closed
+	closed bool
+
+	// notifMu guards notif. It is separate from mu so that acquiring a
+	// notification system — which dials MySQL and can be slow — never blocks
+	// readers of the server state, and so the lock order stays acyclic:
+	// getNotificationSystemForServer takes notifMu then mu (read, via
+	// checkClosed), while Close takes mu and notifMu strictly in sequence,
+	// never nested.
+	notifMu sync.Mutex
+
+	// notif is the notification system instance this server holds a
+	// reference on (nil until the first watch, or after a failed
+	// acquisition). The reference is instance-scoped: Close releases exactly
+	// this instance, and getNotificationSystemForServer re-acquires when the
+	// instance has died, so the shared refcount stays exact — this server
+	// can neither drain a system it never acquired nor be left holding a
+	// claim on nothing.
+	notif *notificationSystem
+
+	// ctx is the server context for graceful shutdown
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// MySQLVersion implements topo.Version for MySQL.
+type MySQLVersion int64
+
+// String implements topo.Version.String.
+func (v MySQLVersion) String() string {
+	return strconv.FormatInt(int64(v), 10)
+}
+
+func init() {
+	for _, cmd := range topo.FlagBinaries {
+		servenv.OnParseFor(cmd, registerMySQLTopoFlags)
+	}
+	topo.RegisterFactory("mysql", Factory{})
+}
+
+func registerMySQLTopoFlags(fs *pflag.FlagSet) {
+	utils.SetFlagIntVar(fs, &lockTTL, "topo-mysql-lock-ttl", lockTTL, "lock TTL in seconds for MySQL topo")
+	utils.SetFlagIntVar(fs, &electionTTL, "topo-mysql-election-ttl", electionTTL, "election TTL in seconds for MySQL topo")
+}
+
+// isRDSHost returns true if the host is an Amazon RDS hostname.
+//
+// The database/sql connections in this package no longer need this: block/mysql
+// gives an RDS address a verified TLS config by itself. It survives for the
+// binlog connector in notification.go, which is Vitess's own MySQL client and
+// so is not covered by the driver.
+//
+// It answers for the commercial `aws` partition only, because that is the scope
+// of the bundle the driver verifies against. China was never matched — the
+// `.amazonaws.com.cn` suffix fell outside the regex this replaced too — but
+// GovCloud was, and its change of answer is a change of failure mode, not the
+// loss of one setting. Such a host used to be handed the commercial bundle,
+// fail verification, and take the Ping in newNotificationSystem down with it,
+// so the topo never opened at all. Now it gets no TLS: the Ping succeeds in the
+// clear, and the binlog connection below leaves SslMode unset, which
+// EffectiveSslMode() reports as "disabled". Loud refusal becomes silent
+// cleartext on both channels.
+//
+// No such deployment can exist today, precisely because the old refusal was
+// total. Nothing in this package requires TLS of anything, though, so there is
+// no fail-closed backstop to catch one either — unlike the strata counterpart,
+// where a credential-bearing GovCloud endpoint hits
+// ErrBackendCredentialRequiresTLS. And reaching either partition needs a trust
+// store this package has no way to accept: mysql.RDSTLSConfig() is a
+// commercial-only starting point, to be used by replacing or extending its
+// RootCAs with that partition's own roots, and with the registration gone there
+// is no longer a config name an operator could name in a DSN.
+func isRDSHost(host string) bool {
+	return mysql.IsRDSAddr(host)
+}
+
+// NewServer returns a new MySQL topo.Server for an already-initialized topology.
+//
+// If the DSN points at a cluster member that is not itself the node hosting the
+// topology, NewServer resolves the real topo server from the member's
+// topo_config table and transparently reconnects there (see connectResolved).
+// NewServer never creates the topo schema: a node whose schema is missing is
+// reported as an error rather than silently initialized, since creating tables
+// on a mistargeted member would turn it into an empty phantom topo. Use
+// CreateSchema to initialize a topology.
+func NewServer(serverAddr, root string) (*Server, error) {
+	// Parse the server address to get MySQL DSN
+	cfg, err := mysql.ParseDSN(serverAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse MySQL DSN: %v", err)
+	}
+	if cfg.DBName == "" {
+		cfg.DBName = DefaultSchema // Use default schema if not specified
+	}
+
+	// If this DSN has no credentials (empty user), it's likely a placeholder from CellInfo.
+	// Since HasGlobalReadOnlyCell returns true, this connection should never actually be used.
+	// Return a minimal server that will fail if actually used, but allows the topology to be set up.
+	if cfg.User == "" {
+		log.Info("MySQL topo: skipping connection for DSN without credentials (will use global connection)")
+		return &Server{
+			root:       root,
+			serverAddr: serverAddr,
+			schemaName: cfg.DBName,
+		}, nil
+	}
+
+	// Connect, transparently redirecting to the real topo server when this DSN
+	// points at a non-topo cluster member. cfg is rewritten to the node we
+	// actually connected to.
+	db, cfg, err := connectResolved(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create server context for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+
+	server := &Server{
+		db:         db,
+		root:       root,
+		serverAddr: cfg.FormatDSN(),
+		schemaName: cfg.DBName,
+		ctx:        ctx,
+		cancel:     cancel,
+	}
+
+	// Require the topo schema to already exist. Unlike a bootstrap, opening a
+	// server never creates tables: doing so against a node that is not actually
+	// a topo server (for example a mistargeted member) would silently turn that
+	// node into an empty phantom topo. Initialization is the explicit job of
+	// CreateSchema.
+	exists, err := topoDataTableExists(db, cfg.DBName)
+	if err != nil {
+		cancel()
+		db.Close()
+		return nil, fmt.Errorf("failed to check for existing tables: %v", err)
+	}
+	if !exists {
+		cancel()
+		db.Close()
+		return nil, fmt.Errorf("MySQL topo schema not found in database %q on %s: the topology has not been initialized (tables are not auto-created; run a cluster bootstrap)", cfg.DBName, cfg.Addr)
+	}
+
+	log.Info("MySQL topo opened", slog.String("addr", cfg.Addr), slog.String("schema", cfg.DBName))
+	return server, nil
+}
+
+// connect opens and verifies a MySQL connection for the given config.
+//
+// An RDS address gets verified TLS with no wiring here: block/mysql applies it
+// in Config.normalize when the DSN asked for nothing else, so the trust store
+// and the endpoint check live in the driver rather than in a copy per consumer.
+func connect(cfg *mysql.Config) (*sql.DB, error) {
+	db, err := sql.Open(driverName, cfg.FormatDSN())
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to MySQL topo at %s (schema %q, user %q): %v", cfg.Addr, cfg.DBName, cfg.User, err)
+	}
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to ping MySQL topo at %s (schema %q, user %q): %v", cfg.Addr, cfg.DBName, cfg.User, err)
+	}
+	return db, nil
+}
+
+// connectResolved opens a connection to the MySQL topo described by cfg. If the
+// node it connects to records a different topo server in its topo_config table,
+// connectResolved closes that connection and reopens against the real topo
+// server, returning the connection and the (possibly rewritten) config. This
+// mirrors the "connect to any member, get routed to the authority" behavior of
+// clustered topologies like etcd, so callers never need to know which node
+// currently hosts the topology.
+//
+// Resolution is best-effort: when topo_config is absent (for example a non-strata
+// MySQL topo), the original connection is returned unchanged.
+func connectResolved(cfg *mysql.Config) (*sql.DB, *mysql.Config, error) {
+	db, err := connect(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	topoAddr, ok := lookupTopoServer(db)
+	if !ok || topoAddr == "" || topoAddr == cfg.Addr {
+		// Already the topo server, or no topo_config to resolve from.
+		return db, cfg, nil
+	}
+
+	// Redirect to the real topo server, keeping the same credentials and schema.
+	log.Info("MySQL topo: resolved topo server from topo_config",
+		slog.String("from", cfg.Addr), slog.String("to", topoAddr))
+	if err := db.Close(); err != nil {
+		log.Warn("MySQL topo: error closing pre-resolution connection", slog.Any("error", err))
+	}
+	resolved := cfg.Clone()
+	resolved.Addr = topoAddr
+	db, err = connect(resolved)
+	if err != nil {
+		return nil, nil, err
+	}
+	return db, resolved, nil
+}
+
+// lookupTopoServer reads the topo server address recorded in the topo_config
+// table (the strata bootstrap convention) of the connection's current schema.
+// The bool result is false when topo_config does not exist or has no
+// topo_server row, in which case the caller treats the connected node as the
+// topo server itself. The query is unqualified: topo_config lives in the same
+// schema as the topo tables, which is already the connection's default database,
+// so the schema name need not be interpolated into the SQL.
+func lookupTopoServer(db *sql.DB) (string, bool) {
+	var addr string
+	if err := db.QueryRow("SELECT `value` FROM topo_config WHERE `key` = 'topo_server'").Scan(&addr); err != nil {
+		return "", false
+	}
+	return addr, true
+}
+
+// topoDataTableExists reports whether the topo_data table exists in the schema.
+func topoDataTableExists(db *sql.DB, schema string) (bool, error) {
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = 'topo_data'", schema).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// CreateSchema initializes the MySQL topo schema (topo_data, topo_locks,
+// topo_elections) in the database named by serverAddr's DSN. It connects
+// directly to that node without topo_config resolution and is the only entry
+// point that creates topo tables — NewServer never does — so it must be invoked
+// explicitly against the node chosen to host the topology (i.e. from a cluster
+// bootstrap). It first verifies the GTID/binlog configuration required for
+// change notifications. Table creation is idempotent.
+func CreateSchema(serverAddr string) error {
+	cfg, err := mysql.ParseDSN(serverAddr)
+	if err != nil {
+		return fmt.Errorf("failed to parse MySQL DSN: %v", err)
+	}
+	if cfg.DBName == "" {
+		cfg.DBName = DefaultSchema
+	}
+
+	db, err := connect(cfg)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	// Binlog replication is required for change notifications and is only
+	// meaningful on the node that hosts the topology, so it is checked here at
+	// creation time rather than on every open.
+	if err := checkMySQLConfiguration(db); err != nil {
+		return fmt.Errorf("MySQL configuration check failed: %v", err)
+	}
+	if err := createTables(db); err != nil {
+		return fmt.Errorf("failed to create tables: %v", err)
+	}
+	cleanupExpiredData(db)
+	return nil
+}
+
+// schemaSQL is the topo schema DDL, shared verbatim with bootstrap scripts that
+// apply it through the mysql client. See schema.sql.
+//
+//go:embed schema.sql
+var schemaSQL string
+
+// createTables creates the required topo tables if they don't already exist.
+func createTables(db *sql.DB) error {
+	for _, query := range schemaStatements() {
+		if _, err := db.Exec(query); err != nil {
+			return fmt.Errorf("failed to create table: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// schemaStatements returns the DDL from schema.sql as individual statements.
+// The file is shared with cluster bootstrap scripts, which pipe it to the mysql
+// client, so statements there are separated by a line holding only a semicolon.
+func schemaStatements() []string {
+	chunks := strings.Split(schemaSQL, "\n;")
+	stmts := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		// Drop the file's leading `--` comment lines so each statement is
+		// handed to the driver on its own.
+		var body []string
+		for line := range strings.SplitSeq(chunk, "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "--") {
+				body = append(body, line)
+			}
+		}
+		if stmt := strings.TrimSpace(strings.Join(body, "\n")); stmt != "" {
+			stmts = append(stmts, stmt)
+		}
+	}
+	return stmts
+}
+
+// checkClosed returns an error if the server has been closed.
+func (s *Server) checkClosed() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return context.Canceled
+	}
+	return nil
+}
+
+// Close implements topo.Server.Close.
+func (s *Server) Close() {
+	s.mu.Lock()
+
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+
+	log.Info("MySQL topo: closing server", slog.String("root", s.root), slog.String("schema", s.schemaName))
+
+	// Cancel the server context
+	if s.cancel != nil {
+		s.cancel()
+	}
+
+	// Close the database connection
+	if s.db != nil {
+		if err := s.db.Close(); err != nil {
+			log.Warn("MySQL topo: error closing database connection", slog.String("root", s.root), slog.String("schema", s.schemaName), slog.Any("error", err))
+		}
+	}
+	s.mu.Unlock()
+
+	// Release the notification-system reference after dropping mu: an
+	// in-flight getNotificationSystemForServer that passed checkClosed
+	// before we flipped closed may still be installing an instance under
+	// notifMu; waiting for notifMu here (without holding mu) means we
+	// release whatever it installed instead of leaking it.
+	s.notifMu.Lock()
+	if s.notif != nil {
+		releaseNotificationSystemRef(s.notif)
+		s.notif = nil
+	}
+	s.notifMu.Unlock()
+}
+
+// getNotificationSystemForServer returns the notification system this server
+// holds a reference on, acquiring one on the first call and re-acquiring
+// whenever the held instance has died — its binlog stream failed terminally,
+// or it was superseded and closed. Re-acquisition releases the stale claim
+// and takes a counted reference on the replacement, so a server can always
+// get a working notification system for a retried watch, and the shared
+// refcount stays exact. The reference is released when the server is closed.
+func (s *Server) getNotificationSystemForServer() (*notificationSystem, error) {
+	s.notifMu.Lock()
+	defer s.notifMu.Unlock()
+
+	if s.notif != nil && !s.notif.dead.Load() {
+		return s.notif, nil
+	}
+
+	// Refuse to acquire on a closed server: Close has already released (or
+	// is about to release, see Close) this server's claim, so an acquisition
+	// past this point would leak a reference and keep the system alive
+	// forever.
+	if err := s.checkClosed(); err != nil {
+		return nil, convertError(err, s.root)
+	}
+
+	ns, err := acquireNotificationSystem(s.schemaName, s.serverAddr)
+	if err != nil {
+		// Keep the stale claim (if any): its release stays balanced against
+		// the instance it was acquired on, and the next call retries the
+		// acquisition.
+		return nil, err
+	}
+	if s.notif != nil {
+		releaseNotificationSystemRef(s.notif)
+	}
+	s.notif = ns
+	return ns, nil
+}
+
+// resolvePath returns the full path by combining the server's root with the given path
+// For example:
+// keyspaces/commerce => '/vitess/global/keyspaces/commerce'
+// keyspaces/commerce/shards/0 => '/vitess/global/keyspaces/commerce/shards/0'
+func (s *Server) resolvePath(filePath string) string {
+	if s.root == "" || s.root == "/" {
+		return filePath
+	}
+	return path.Join(s.root, filePath)
+}
+
+// relativePath converts a fullDirPath back to a relativePath
+func (s *Server) relativePath(filePath, fullDirPath string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(filePath, fullDirPath), "/")
+}
+
+// convertError converts a MySQL error to a topo error.
+func convertError(err error, path string) error {
+	if err == nil {
+		return nil
+	}
+
+	// Handle context errors
+	if errors.Is(err, context.Canceled) {
+		return topo.NewError(topo.Interrupted, path)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return topo.NewError(topo.Timeout, path)
+	}
+
+	// Handle SQL errors
+	if errors.Is(err, sql.ErrNoRows) {
+		return topo.NewError(topo.NoNode, path)
+	}
+
+	// Handle MySQL-specific errors. block-mysql returns *mysql.MySQLError,
+	// which carries the server error number directly; its message format
+	// ("Error 1062 (23000): ...") is not recognized by
+	// sqlerror.NewSQLErrorFromError, so check the typed error first and only
+	// fall back to message parsing for errors from other sources.
+	var errno sqlerror.ErrorCode
+	var driverErr *mysql.MySQLError
+	if errors.As(err, &driverErr) {
+		errno = sqlerror.ErrorCode(driverErr.Number)
+	} else if sqlErr, ok := sqlerror.NewSQLErrorFromError(err).(*sqlerror.SQLError); ok && sqlErr != nil {
+		errno = sqlErr.Number()
+	}
+	switch errno {
+	case sqlerror.ERDupEntry:
+		return topo.NewError(topo.NodeExists, path)
+	case sqlerror.ERLockDeadlock, sqlerror.ERLockWaitTimeout:
+		// Transient locking failures; report as Timeout so callers treat
+		// them as retryable rather than fatal.
+		return topo.NewError(topo.Timeout, path)
+	}
+	// Default: return the original error
+	return err
+}
+
+// cleanupExpiredData removes expired locks and elections.
+func cleanupExpiredData(db *sql.DB) {
+	now := time.Now()
+
+	// Clean up expired locks - ignore errors if table doesn't exist yet
+	if _, err := db.Exec("DELETE FROM topo_locks WHERE expires_at < ?", now); err != nil {
+		log.Info("Skipping lock cleanup (table may not exist yet)", slog.Any("error", err))
+	}
+
+	// Clean up expired elections - ignore errors if table doesn't exist yet
+	if _, err := db.Exec("DELETE FROM topo_elections WHERE expires_at < ?", now); err != nil {
+		log.Info("Skipping election cleanup (table may not exist yet)", slog.Any("error", err))
+	}
+}
+
+// matchPrefix creates a LIKE pattern that matches every path starting with
+// prefix, including prefix itself and any sibling whose name extends it
+// (/path/to/foot for /path/to/foo). This is what topo.Conn.List wants: it
+// takes a path prefix, not a directory.
+func matchPrefix(prefix string) string {
+	return escapeLike(prefix) + "%"
+}
+
+// matchDirectory creates a LIKE pattern that matches only the paths contained
+// in the directory at dirPath. The path separator before the wildcard is what
+// keeps prefix siblings out: without it, listing /path/to/foo also returns
+// /path/to/foot's nodes, and an existence probe for /path/to/foo is satisfied
+// by /path/to/foot.
+func matchDirectory(dirPath string) string {
+	trimmed := strings.TrimSuffix(dirPath, "/")
+	if trimmed == "" {
+		// Degenerate root: with a root of "" or "/", resolvePath leaves paths
+		// relative, so there is no separator to anchor on and every row is
+		// contained in this directory.
+		return "%"
+	}
+	return escapeLike(trimmed) + "/%"
+}
+
+// escapeLike escapes the characters that are special to LIKE (_ and %).
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, "_", "\\_")
+	s = strings.ReplaceAll(s, "%", "\\%")
+	return s
+}
+
+// checkMySQLConfiguration verifies that MySQL is configured correctly for binlog replication.
+func checkMySQLConfiguration(db *sql.DB) error {
+	// Check GTID mode
+	var gtidMode string
+	err := db.QueryRow("SELECT @@GLOBAL.gtid_mode").Scan(&gtidMode)
+	if err != nil {
+		return fmt.Errorf("failed to check GTID mode: %v", err)
+	}
+
+	if gtidMode != "ON" {
+		return fmt.Errorf("GTID mode is '%s' but must be 'ON' for MySQL topo server to work with binlog replication. Please set gtid_mode=ON in your MySQL configuration", gtidMode)
+	}
+
+	// Check that binary logging is enabled
+	var logBin string
+	err = db.QueryRow("SELECT @@GLOBAL.log_bin").Scan(&logBin)
+	if err != nil {
+		return fmt.Errorf("failed to check binary logging status: %v", err)
+	}
+
+	if logBin != "1" && logBin != "ON" {
+		return errors.New("binary logging is disabled but is required for MySQL topo server. Please set log_bin=ON in your MySQL configuration")
+	}
+
+	return nil
+}
