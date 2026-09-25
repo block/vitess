@@ -171,6 +171,12 @@ func (e *Executor) newExecute(
 		// Set the session variable to indicate if the query is a read query or not.
 		safeSession.SetExecReadQuery(plan.QueryType.IsReadStatement())
 
+		// Scope the ALLOW_CROSS_SHARD directive to this execute call so nested
+		// executor.Execute() invocations (e.g. from vindex lookups) cannot clobber the outer setting.
+		prevAllowCrossShard := safeSession.GetAllowCrossShard()
+		safeSession.SetAllowCrossShard(e.resolveAllowCrossShard(sql, stmt))
+		defer safeSession.SetAllowCrossShard(prevAllowCrossShard)
+
 		// Execute the plan.
 		if plan.Instructions.NeedsTransaction() {
 			err = e.insideTransaction(ctx, safeSession, logStats,
@@ -525,4 +531,31 @@ func shouldBlockQueries(plan *engine.Plan, safeSession *econtext.SafeSession) bo
 		safeSession.SetErrorUntilRollback(false)
 	}
 	return false
+}
+
+// resolveAllowCrossShard reports whether the ALLOW_CROSS_SHARD directive
+// applies to this execution.
+//
+// stmt is nil on a prepared-plan cache hit: fetchOrCreatePlan serves the plan
+// straight out of the cache and never parses, so reading the directive off the
+// statement would return false on every execution after the first and the
+// directive would silently stop bypassing the SINGLE-mode cross-shard check.
+// Fall back to the SQL text in that case, parsing only when the directive name
+// actually appears so that the plan cache keeps its value for every other
+// query. A name that appears only inside a literal costs one parse and is then
+// correctly rejected.
+func (e *Executor) resolveAllowCrossShard(sql string, stmt sqlparser.Statement) bool {
+	if stmt != nil {
+		return sqlparser.AllowCrossShardDirective(stmt)
+	}
+	if !strings.Contains(strings.ToUpper(sql), sqlparser.DirectiveAllowCrossShard) {
+		return false
+	}
+	parsed, err := e.env.Parser().Parse(sql)
+	if err != nil {
+		// Planning already succeeded on this SQL, so a parse failure here is
+		// not actionable; treat the directive as absent.
+		return false
+	}
+	return sqlparser.AllowCrossShardDirective(parsed)
 }
