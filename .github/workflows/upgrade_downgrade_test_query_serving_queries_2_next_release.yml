@@ -1,12 +1,12 @@
 name: Query Serving (Queries - 2) Next Release - Upgrade Downgrade Testing
+# The fork has no release branch above release-24.0, so
+# tools/get_next_release.sh resolves the "next release" to this repo's `main`,
+# which tracks upstream only intermittently. That makes the N+1 side of this
+# comparison an arbitrary snapshot rather than a real next release, so the
+# workflow is manual-dispatch only. Restore the push/pull_request triggers
+# below once a release-25.0 branch exists here.
 on:
-  push:
-    branches:
-      - "main"
-      - "release-[0-9]+.[0-9]"
-    tags: '**'
-  pull_request:
-    branches: '**'
+  workflow_dispatch:
 
 concurrency:
   group: format('{0}-{1}', ${{ github.ref }}, 'Upgrade Downgrade Testing Query Serving (Queries - 2) Next Release')
