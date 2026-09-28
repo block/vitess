@@ -320,3 +320,22 @@ func TestTargetTabletAlias(t *testing.T) {
 	session.SetTargetTabletAlias(nil)
 	assert.Nil(t, session.GetTargetTabletAlias())
 }
+
+// TestAdvisoryLockCounts verifies that every GET_LOCK of a name is counted,
+// including the first acquisition of a name when another lock is already
+// held, so that the lock is only forgotten after as many RELEASE_LOCKs.
+func TestAdvisoryLockCounts(t *testing.T) {
+	session := NewSafeSession(&vtgatepb.Session{})
+
+	session.AddAdvisoryLock("a")
+	session.AddAdvisoryLock("b")
+	session.AddAdvisoryLock("b")
+	assert.Equal(t, map[string]int64{"a": 1, "b": 2}, session.AdvisoryLock)
+
+	session.RemoveAdvisoryLock("a")
+	assert.Equal(t, map[string]int64{"b": 2}, session.AdvisoryLock)
+	session.RemoveAdvisoryLock("b")
+	assert.True(t, session.HasAdvisoryLock())
+	session.RemoveAdvisoryLock("b")
+	assert.False(t, session.HasAdvisoryLock())
+}

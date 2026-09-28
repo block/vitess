@@ -53,8 +53,9 @@ type Lock struct {
 }
 
 type LockFunc struct {
-	Typ  *sqlparser.LockingFunc
-	Name evalengine.Expr
+	Typ   *sqlparser.LockingFunc
+	Name  evalengine.Expr
+	Alias sqlparser.IdentifierCI
 }
 
 // TryExecute is part of the Primitive interface
@@ -123,7 +124,7 @@ func (l *Lock) execLock(ctx context.Context, vcursor VCursor, bindVars map[strin
 
 func (lf *LockFunc) execLock(ctx context.Context, vcursor VCursor, bindVars map[string]*querypb.BindVariable, rs *srvtopo.ResolvedShard) (*sqltypes.Result, error) {
 	boundQuery := &querypb.BoundQuery{
-		Sql:           fmt.Sprintf("select %s from dual", sqlparser.String(lf.Typ)),
+		Sql:           fmt.Sprintf("select %s from dual", sqlparser.String(&sqlparser.AliasedExpr{Expr: lf.Typ, As: lf.Alias})),
 		BindVariables: bindVars,
 	}
 	qr, err := vcursor.ExecuteLock(ctx, rs, boundQuery, lf.Typ.Type)

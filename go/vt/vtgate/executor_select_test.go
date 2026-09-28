@@ -3515,6 +3515,24 @@ func TestSelectLock(t *testing.T) {
 	utils.MustMatch(t, wantSession, session.Session, "")
 }
 
+// TestSelectLockAlias verifies that a lock function's alias is sent to the
+// tablet, so the result column carries the name the client asked for.
+func TestSelectLockAlias(t *testing.T) {
+	executor, sbc1, _, _, _ := createExecutorEnv(t)
+	session := econtext.NewAutocommitSession(&vtgatepb.Session{})
+
+	_, err := exec(executor, session, "select get_lock('lock name', 10) as got, release_lock('lock name') from dual")
+	require.NoError(t, err)
+	wantQueries := []*querypb.BoundQuery{{
+		Sql:           "select get_lock('lock name', 10) as got from dual",
+		BindVariables: map[string]*querypb.BindVariable{},
+	}, {
+		Sql:           "select release_lock('lock name') from dual",
+		BindVariables: map[string]*querypb.BindVariable{},
+	}}
+	utils.MustMatch(t, wantQueries, sbc1.Queries, "")
+}
+
 func TestLockReserve(t *testing.T) {
 	executor, _, _, _, _ := createExecutorEnv(t)
 
