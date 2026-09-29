@@ -645,7 +645,7 @@ func (cached *Lock) CachedSize(alloc bool) int64 {
 	}
 	size := int64(0)
 	if alloc {
-		size += int64(64)
+		size += int64(80)
 	}
 	// field Keyspace *vitess.io/vitess/go/vt/vtgate/vindexes.Keyspace
 	size += cached.Keyspace.CachedSize(true)
@@ -655,6 +655,8 @@ func (cached *Lock) CachedSize(alloc bool) int64 {
 	}
 	// field FieldQuery string
 	size += hack.RuntimeAllocSize(int64(len(cached.FieldQuery)))
+	// field Comments *vitess.io/vitess/go/vt/sqlparser.ParsedComments
+	size += cached.Comments.CachedSize(true)
 	// field LockFunctions []*vitess.io/vitess/go/vt/vtgate/engine.LockFunc
 	{
 		size += hack.RuntimeAllocSize(int64(cap(cached.LockFunctions)) * int64(8))
@@ -671,7 +673,7 @@ func (cached *LockFunc) CachedSize(alloc bool) int64 {
 	}
 	size := int64(0)
 	if alloc {
-		size += int64(24)
+		size += int64(64)
 	}
 	// field Typ *vitess.io/vitess/go/vt/sqlparser.LockingFunc
 	size += cached.Typ.CachedSize(true)
@@ -679,6 +681,8 @@ func (cached *LockFunc) CachedSize(alloc bool) int64 {
 	if cc, ok := cached.Name.(cachedObject); ok {
 		size += cc.CachedSize(true)
 	}
+	// field Alias vitess.io/vitess/go/vt/sqlparser.IdentifierCI
+	size += cached.Alias.CachedSize(false)
 	return size
 }
 
