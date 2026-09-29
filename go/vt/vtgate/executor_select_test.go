@@ -3533,6 +3533,32 @@ func TestSelectLockAlias(t *testing.T) {
 	utils.MustMatch(t, wantQueries, sbc1.Queries, "")
 }
 
+// TestSelectLockKeepsReentrantSecondName verifies that a name locked twice
+// while another lock is held stays held, with its lock connection reserved,
+// after one RELEASE_LOCK of it and the release of the other lock.
+func TestSelectLockKeepsReentrantSecondName(t *testing.T) {
+	executor, sbc1, _, _, _ := createExecutorEnv(t)
+	session := econtext.NewSafeSession(nil)
+	session.Session.InTransaction = true
+	session.ShardSessions = []*vtgatepb.Session_ShardSession{{
+		Target:        &querypb.Target{Keyspace: "TestExecutor", Shard: "-20", TabletType: topodatapb.TabletType_PRIMARY},
+		TransactionId: 12345,
+		TabletAlias:   sbc1.Tablet().Alias,
+	}}
+	for _, q := range []string{
+		"select get_lock('a', 10) from dual",
+		"select get_lock('b', 10) from dual",
+		"select get_lock('b', 10) from dual",
+		"select release_lock('b') from dual",
+		"select release_lock('a') from dual",
+	} {
+		_, err := exec(executor, session, q)
+		require.NoError(t, err, q)
+	}
+	require.Equal(t, map[string]int64{"b": 1}, session.AdvisoryLock)
+	require.NotNil(t, session.LockSession, "the lock connection still holding b was released")
+}
+
 func TestLockReserve(t *testing.T) {
 	executor, _, _, _, _ := createExecutorEnv(t)
 
