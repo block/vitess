@@ -306,7 +306,7 @@ func handleDualSelects(sel *sqlparser.Select, vschema plancontext.VSchema) (engi
 		var err error
 		lFunc, isLFunc := expr.Expr.(*sqlparser.LockingFunc)
 		if isLFunc {
-			elem := &engine.LockFunc{Typ: expr.Expr.(*sqlparser.LockingFunc)}
+			elem := &engine.LockFunc{Typ: lFunc, Alias: expr.As}
 			if lFunc.Name != nil {
 				n, err := evalengine.Translate(lFunc.Name, &evalengine.Config{
 					Collation:   vschema.ConnCollation(),
@@ -355,6 +355,7 @@ func buildLockingPrimitive(sel *sqlparser.Select, vschema plancontext.VSchema, l
 		Keyspace:          ks,
 		TargetDestination: key.DestinationKeyspaceID{0},
 		FieldQuery:        buf.String(),
+		Comments:          sel.Comments,
 		LockFunctions:     lockFunctions,
 	}, nil
 }

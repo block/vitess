@@ -3515,6 +3515,69 @@ func TestSelectLock(t *testing.T) {
 	utils.MustMatch(t, wantSession, session.Session, "")
 }
 
+// TestSelectLockAlias verifies that a lock function's alias is sent to the
+// tablet, so the result column carries the name the client asked for.
+func TestSelectLockAlias(t *testing.T) {
+	executor, sbc1, _, _, _ := createExecutorEnv(t)
+	session := econtext.NewAutocommitSession(&vtgatepb.Session{})
+
+	_, err := exec(executor, session, "select get_lock('lock name', 10) as got, release_lock('lock name') from dual")
+	require.NoError(t, err)
+	wantQueries := []*querypb.BoundQuery{{
+		Sql:           "select get_lock('lock name', 10) as got from dual",
+		BindVariables: map[string]*querypb.BindVariable{},
+	}, {
+		Sql:           "select release_lock('lock name') from dual",
+		BindVariables: map[string]*querypb.BindVariable{},
+	}}
+	utils.MustMatch(t, wantQueries, sbc1.Queries, "")
+}
+
+// TestSelectLockComments verifies that a lock SELECT's comments, such as a
+// MAX_EXECUTION_TIME hint that bounds a GET_LOCK wait, are sent to the tablet
+// with every lock function.
+func TestSelectLockComments(t *testing.T) {
+	executor, sbc1, _, _, _ := createExecutorEnv(t)
+	session := econtext.NewAutocommitSession(&vtgatepb.Session{})
+
+	_, err := exec(executor, session, "select /*+ MAX_EXECUTION_TIME(100) */ get_lock('lock name', 10), release_lock('lock name') from dual")
+	require.NoError(t, err)
+	wantQueries := []*querypb.BoundQuery{{
+		Sql:           "select /*+ MAX_EXECUTION_TIME(100) */ get_lock('lock name', 10) from dual",
+		BindVariables: map[string]*querypb.BindVariable{},
+	}, {
+		Sql:           "select /*+ MAX_EXECUTION_TIME(100) */ release_lock('lock name') from dual",
+		BindVariables: map[string]*querypb.BindVariable{},
+	}}
+	utils.MustMatch(t, wantQueries, sbc1.Queries, "")
+}
+
+// TestSelectLockKeepsReentrantSecondName verifies that a name locked twice
+// while another lock is held stays held, with its lock connection reserved,
+// after one RELEASE_LOCK of it and the release of the other lock.
+func TestSelectLockKeepsReentrantSecondName(t *testing.T) {
+	executor, sbc1, _, _, _ := createExecutorEnv(t)
+	session := econtext.NewSafeSession(nil)
+	session.Session.InTransaction = true
+	session.ShardSessions = []*vtgatepb.Session_ShardSession{{
+		Target:        &querypb.Target{Keyspace: "TestExecutor", Shard: "-20", TabletType: topodatapb.TabletType_PRIMARY},
+		TransactionId: 12345,
+		TabletAlias:   sbc1.Tablet().Alias,
+	}}
+	for _, q := range []string{
+		"select get_lock('a', 10) from dual",
+		"select get_lock('b', 10) from dual",
+		"select get_lock('b', 10) from dual",
+		"select release_lock('b') from dual",
+		"select release_lock('a') from dual",
+	} {
+		_, err := exec(executor, session, q)
+		require.NoError(t, err, q)
+	}
+	require.Equal(t, map[string]int64{"b": 1}, session.AdvisoryLock)
+	require.NotNil(t, session.LockSession, "the lock connection still holding b was released")
+}
+
 func TestLockReserve(t *testing.T) {
 	executor, _, _, _, _ := createExecutorEnv(t)
 

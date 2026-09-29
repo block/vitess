@@ -49,12 +49,17 @@ type Lock struct {
 
 	FieldQuery string
 
+	// Comments are the SELECT's comments, sent with every lock function so
+	// that hints such as MAX_EXECUTION_TIME still apply.
+	Comments *sqlparser.ParsedComments
+
 	LockFunctions []*LockFunc
 }
 
 type LockFunc struct {
-	Typ  *sqlparser.LockingFunc
-	Name evalengine.Expr
+	Typ   *sqlparser.LockingFunc
+	Name  evalengine.Expr
+	Alias sqlparser.IdentifierCI
 }
 
 // TryExecute is part of the Primitive interface
@@ -83,7 +88,7 @@ func (l *Lock) execLock(ctx context.Context, vcursor VCursor, bindVars map[strin
 			}
 			lName = er.Value(vcursor.ConnCollation()).ToString()
 		}
-		qr, err := lf.execLock(ctx, vcursor, bindVars, rss[0])
+		qr, err := lf.execLock(ctx, vcursor, bindVars, rss[0], l.Comments)
 		if err != nil {
 			return nil, err
 		}
@@ -121,9 +126,9 @@ func (l *Lock) execLock(ctx context.Context, vcursor VCursor, bindVars map[strin
 	}, nil
 }
 
-func (lf *LockFunc) execLock(ctx context.Context, vcursor VCursor, bindVars map[string]*querypb.BindVariable, rs *srvtopo.ResolvedShard) (*sqltypes.Result, error) {
+func (lf *LockFunc) execLock(ctx context.Context, vcursor VCursor, bindVars map[string]*querypb.BindVariable, rs *srvtopo.ResolvedShard, comments *sqlparser.ParsedComments) (*sqltypes.Result, error) {
 	boundQuery := &querypb.BoundQuery{
-		Sql:           fmt.Sprintf("select %s from dual", sqlparser.String(lf.Typ)),
+		Sql:           fmt.Sprintf("select %s%s from dual", sqlparser.String(comments), sqlparser.String(&sqlparser.AliasedExpr{Expr: lf.Typ, As: lf.Alias})),
 		BindVariables: bindVars,
 	}
 	qr, err := vcursor.ExecuteLock(ctx, rs, boundQuery, lf.Typ.Type)
