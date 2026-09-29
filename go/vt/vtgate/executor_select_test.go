@@ -3533,6 +3533,25 @@ func TestSelectLockAlias(t *testing.T) {
 	utils.MustMatch(t, wantQueries, sbc1.Queries, "")
 }
 
+// TestSelectLockComments verifies that a lock SELECT's comments, such as a
+// MAX_EXECUTION_TIME hint that bounds a GET_LOCK wait, are sent to the tablet
+// with every lock function.
+func TestSelectLockComments(t *testing.T) {
+	executor, sbc1, _, _, _ := createExecutorEnv(t)
+	session := econtext.NewAutocommitSession(&vtgatepb.Session{})
+
+	_, err := exec(executor, session, "select /*+ MAX_EXECUTION_TIME(100) */ get_lock('lock name', 10), release_lock('lock name') from dual")
+	require.NoError(t, err)
+	wantQueries := []*querypb.BoundQuery{{
+		Sql:           "select /*+ MAX_EXECUTION_TIME(100) */ get_lock('lock name', 10) from dual",
+		BindVariables: map[string]*querypb.BindVariable{},
+	}, {
+		Sql:           "select /*+ MAX_EXECUTION_TIME(100) */ release_lock('lock name') from dual",
+		BindVariables: map[string]*querypb.BindVariable{},
+	}}
+	utils.MustMatch(t, wantQueries, sbc1.Queries, "")
+}
+
 // TestSelectLockKeepsReentrantSecondName verifies that a name locked twice
 // while another lock is held stays held, with its lock connection reserved,
 // after one RELEASE_LOCK of it and the release of the other lock.

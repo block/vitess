@@ -355,6 +355,7 @@ func buildLockingPrimitive(sel *sqlparser.Select, vschema plancontext.VSchema, l
 		Keyspace:          ks,
 		TargetDestination: key.DestinationKeyspaceID{0},
 		FieldQuery:        buf.String(),
+		Comments:          sel.Comments,
 		LockFunctions:     lockFunctions,
 	}, nil
 }
