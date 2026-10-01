@@ -217,3 +217,83 @@ func TestWeightStringFallBack(t *testing.T) {
 		Type:  evalengine.NewType(sqltypes.VarBinary, collations.CollationBinaryID),
 	}}, distinct.CheckCols, "checkCols should not be updated")
 }
+
+// TestDistinctUnknownType covers columns the planner could not type, such as
+// columns of a table whose vschema lists no columns. sqltypes.Unknown has
+// every type flag bit set, so it must not reach the hash function as a
+// coercion target.
+func TestDistinctUnknownType(t *testing.T) {
+	offsetOne := 1
+	testCases := []struct {
+		name           string
+		wsCol          *int
+		inputs         *sqltypes.Result
+		expectedResult *sqltypes.Result
+		expectedError  string
+	}{{
+		name:  "text uses the weight string column",
+		wsCol: &offsetOne,
+		inputs: r("name|weight_string(name)", "varchar|varbinary",
+			"b|B", "A|A", "a|A", "B|B", "null|null", "z|Z"),
+		expectedResult: r("name", "varchar", "b", "A", "null", "z"),
+	}, {
+		name:  "text after a null uses the weight string column",
+		wsCol: &offsetOne,
+		inputs: r("name|weight_string(name)", "varchar|varbinary",
+			"null|null", "a|A", "A|A"),
+		expectedResult: r("name", "varchar", "null", "a"),
+	}, {
+		// MySQL returns NULL from WEIGHT_STRING() for DECIMAL, FLOAT and DOUBLE.
+		name:  "decimal with a null weight string column",
+		wsCol: &offsetOne,
+		inputs: r("d|weight_string(d)", "decimal|varbinary",
+			"1.5|null", "2|null", "1.5|null", "null|null"),
+		expectedResult: r("d", "decimal", "1.5", "2", "null"),
+	}, {
+		name:  "float with a null weight string column",
+		wsCol: &offsetOne,
+		inputs: r("d|weight_string(d)", "float64|varbinary",
+			"1.5|null", "2|null", "1.5|null", "null|null"),
+		expectedResult: r("d", "float64", "1.5", "2", "null"),
+	}, {
+		name:           "numbers without a weight string column",
+		inputs:         r("id", "int64", "1", "2", "1", "null"),
+		expectedResult: r("id", "int64", "1", "2", "null"),
+	}, {
+		name:          "text without a weight string column",
+		inputs:        r("name", "varchar", "b", "a"),
+		expectedError: evalengine.UnsupportedCollationHashError.Error(),
+	}}
+
+	for _, tc := range testCases {
+		checkCols := []CheckCol{{
+			Col:          0,
+			WsCol:        tc.wsCol,
+			Type:         evalengine.NewUnknownType(),
+			CollationEnv: collations.MySQL8(),
+		}}
+		newDistinct := func() *Distinct {
+			return &Distinct{
+				Source:    &fakePrimitive{results: []*sqltypes.Result{tc.inputs}},
+				CheckCols: checkCols,
+				Truncate:  1,
+			}
+		}
+		check := func(t *testing.T, qr *sqltypes.Result, err error) {
+			if tc.expectedError != "" {
+				require.EqualError(t, err, tc.expectedError)
+				return
+			}
+			require.NoError(t, err)
+			utils.MustMatch(t, fmt.Sprintf("%v", tc.expectedResult.Rows), fmt.Sprintf("%v", qr.Truncate(1).Rows))
+		}
+		t.Run(tc.name+"-Execute", func(t *testing.T) {
+			qr, err := newDistinct().TryExecute(t.Context(), &noopVCursor{}, nil, true)
+			check(t, qr, err)
+		})
+		t.Run(tc.name+"-StreamExecute", func(t *testing.T) {
+			qr, err := wrapStreamExecute(newDistinct(), &noopVCursor{}, nil, true)
+			check(t, qr, err)
+		})
+	}
+}

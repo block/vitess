@@ -407,18 +407,171 @@
     "comment": "DISTINCT inside derived table",
     "query": "select * from (select distinct name from user) as t",
     "plan": {
-      "Type": "Scatter",
+      "Type": "Complex",
       "QueryType": "SELECT",
       "Original": "select * from (select distinct name from user) as t",
       "Instructions": {
-        "OperatorType": "Route",
-        "Variant": "Scatter",
-        "Keyspace": {
-          "Name": "user",
-          "Sharded": true
-        },
-        "FieldQuery": "select `name` from (select `name` from `user` where 1 != 1) as t where 1 != 1",
-        "Query": "select `name` from (select distinct `name` from `user`) as t"
+        "OperatorType": "Distinct",
+        "Collations": [
+          "(0:1)"
+        ],
+        "ResultColumns": 1,
+        "Inputs": [
+          {
+            "OperatorType": "Route",
+            "Variant": "Scatter",
+            "Keyspace": {
+              "Name": "user",
+              "Sharded": true
+            },
+            "FieldQuery": "select t.`name`, weight_string(t.`name`) from (select `name` from `user` where 1 != 1) as t where 1 != 1",
+            "Query": "select distinct t.`name`, weight_string(t.`name`) from (select `name` from `user`) as t"
+          }
+        ]
+      },
+      "TablesUsed": [
+        "user.user"
+      ]
+    }
+  },
+  {
+    "comment": "COUNT over DISTINCT inside derived table",
+    "query": "select count(*) from (select distinct name from user) as t",
+    "plan": {
+      "Type": "Complex",
+      "QueryType": "SELECT",
+      "Original": "select count(*) from (select distinct name from user) as t",
+      "Instructions": {
+        "OperatorType": "Aggregate",
+        "Variant": "Scalar",
+        "Aggregates": "count_star(0) AS count(*)",
+        "Inputs": [
+          {
+            "OperatorType": "Projection",
+            "Expressions": [
+              "1 as 1"
+            ],
+            "Inputs": [
+              {
+                "OperatorType": "Distinct",
+                "Collations": [
+                  "(0:1)"
+                ],
+                "Inputs": [
+                  {
+                    "OperatorType": "Route",
+                    "Variant": "Scatter",
+                    "Keyspace": {
+                      "Name": "user",
+                      "Sharded": true
+                    },
+                    "FieldQuery": "select t.* from (select `name`, weight_string(`name`) from `user` where 1 != 1) as t where 1 != 1",
+                    "Query": "select distinct t.* from (select `name`, weight_string(`name`) from `user`) as t"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "TablesUsed": [
+        "user.user"
+      ]
+    }
+  },
+  {
+    "comment": "DISTINCT inside derived table on a unique vindex column is merged",
+    "query": "select count(*) from (select distinct id, name from user) as t",
+    "plan": {
+      "Type": "Complex",
+      "QueryType": "SELECT",
+      "Original": "select count(*) from (select distinct id, name from user) as t",
+      "Instructions": {
+        "OperatorType": "Aggregate",
+        "Variant": "Scalar",
+        "Aggregates": "sum_count_star(0) AS count(*)",
+        "Inputs": [
+          {
+            "OperatorType": "Route",
+            "Variant": "Scatter",
+            "Keyspace": {
+              "Name": "user",
+              "Sharded": true
+            },
+            "FieldQuery": "select count(*) from (select id, `name` from `user` where 1 != 1) as t where 1 != 1",
+            "Query": "select count(*) from (select distinct id, `name` from `user`) as t"
+          }
+        ]
+      },
+      "TablesUsed": [
+        "user.user"
+      ]
+    }
+  },
+  {
+    "comment": "DISTINCT over GROUP BY on a unique vindex inside derived table",
+    "query": "select * from (select distinct name from user group by id) as t",
+    "plan": {
+      "Type": "Complex",
+      "QueryType": "SELECT",
+      "Original": "select * from (select distinct name from user group by id) as t",
+      "Instructions": {
+        "OperatorType": "Distinct",
+        "Collations": [
+          "(0:1)"
+        ],
+        "ResultColumns": 1,
+        "Inputs": [
+          {
+            "OperatorType": "Route",
+            "Variant": "Scatter",
+            "Keyspace": {
+              "Name": "user",
+              "Sharded": true
+            },
+            "FieldQuery": "select t.`name`, weight_string(t.`name`) from (select `name` from `user` where 1 != 1) as t where 1 != 1",
+            "Query": "select distinct t.`name`, weight_string(t.`name`) from (select `name` from `user`) as t"
+          }
+        ]
+      },
+      "TablesUsed": [
+        "user.user"
+      ]
+    }
+  },
+  {
+    "comment": "DISTINCT over GROUP BY inside derived table, with the outer query not using its columns",
+    "query": "select 1 from (select distinct name, textcol1 from user group by textcol1, name) as t",
+    "plan": {
+      "Type": "Complex",
+      "QueryType": "SELECT",
+      "Original": "select 1 from (select distinct name, textcol1 from user group by textcol1, name) as t",
+      "Instructions": {
+        "OperatorType": "Projection",
+        "Expressions": [
+          "1 as 1"
+        ],
+        "Inputs": [
+          {
+            "OperatorType": "Distinct",
+            "Collations": [
+              "(0:2)",
+              "1: latin1_swedish_ci"
+            ],
+            "Inputs": [
+              {
+                "OperatorType": "Route",
+                "Variant": "Scatter",
+                "Keyspace": {
+                  "Name": "user",
+                  "Sharded": true
+                },
+                "FieldQuery": "select t.* from (select `name`, textcol1, weight_string(`name`) from `user` where 1 != 1) as t where 1 != 1",
+                "Query": "select distinct t.* from (select `name`, textcol1, weight_string(`name`) from `user`) as t"
+              }
+            ]
+          }
+        ]
       },
       "TablesUsed": [
         "user.user"

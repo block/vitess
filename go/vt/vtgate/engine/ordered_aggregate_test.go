@@ -110,31 +110,126 @@ func TestOrderedAggregateExecuteTruncate(t *testing.T) {
 	utils.MustMatch(t, wantResult, result)
 }
 
-func TestMinMaxFailsCorrectly(t *testing.T) {
-	fp := &fakePrimitive{
-		results: []*sqltypes.Result{sqltypes.MakeTestResult(
-			sqltypes.MakeTestFields(
-				"col|weight_string(col)",
-				"varchar|varbinary",
-			),
-			"a|A",
-			"A|A",
-			"b|B",
-			"C|C",
-			"c|C",
-		)},
+// TestMinMaxUsesWeightString covers MIN and MAX over a column the planner
+// could not compare in vtgate, so it asked MySQL for a weight string. The
+// result is the value with the lowest or highest weight, and the weight
+// string column reports that value's weight.
+func TestMinMaxUsesWeightString(t *testing.T) {
+	fields := sqltypes.MakeTestFields(
+		"col|weight_string(col)",
+		"varchar|varbinary",
+	)
+	input := sqltypes.MakeTestResult(fields,
+		"b|B",
+		"null|null",
+		"A|A",
+		"a|A",
+		"C|C",
+		"c|C",
+	)
+	testCases := []struct {
+		opcode AggregateOpcode
+		want   string
+	}{
+		{opcode: AggregateMin, want: "A|A"},
+		{opcode: AggregateMax, want: "C|C"},
+	}
+	for _, tc := range testCases {
+		newAggregate := func() *ScalarAggregate {
+			aggr := NewAggregateParam(tc.opcode, 0, nil, "", collations.MySQL8())
+			aggr.WCol = 1
+			return &ScalarAggregate{
+				Aggregates: []*AggregateParams{aggr},
+				Input:      &fakePrimitive{results: []*sqltypes.Result{input}},
+			}
+		}
+		want := sqltypes.MakeTestResult(fields, tc.want)
+		t.Run(tc.opcode.String()+"-Execute", func(t *testing.T) {
+			result, err := newAggregate().TryExecute(t.Context(), &noopVCursor{}, nil, true)
+			require.NoError(t, err)
+			utils.MustMatch(t, want.Rows, result.Rows)
+		})
+		t.Run(tc.opcode.String()+"-StreamExecute", func(t *testing.T) {
+			result, err := wrapStreamExecute(newAggregate(), &noopVCursor{}, nil, true)
+			require.NoError(t, err)
+			utils.MustMatch(t, want.Rows, result.Rows)
+		})
 	}
 
-	aggr := NewAggregateParam(AggregateMax, 0, nil, "", collations.MySQL8())
-	aggr.WCol = 1
-	oa := &ScalarAggregate{
-		Aggregates:          []*AggregateParams{aggr},
-		TruncateColumnCount: 1,
-		Input:               fp,
-	}
+	t.Run("all null", func(t *testing.T) {
+		aggr := NewAggregateParam(AggregateMax, 0, nil, "", collations.MySQL8())
+		aggr.WCol = 1
+		oa := &ScalarAggregate{
+			Aggregates: []*AggregateParams{aggr},
+			Input: &fakePrimitive{results: []*sqltypes.Result{
+				sqltypes.MakeTestResult(fields, "null|null", "null|null"),
+			}},
+		}
+		result, err := oa.TryExecute(t.Context(), &noopVCursor{}, nil, true)
+		require.NoError(t, err)
+		utils.MustMatch(t, sqltypes.MakeTestResult(fields, "null|null").Rows, result.Rows)
+	})
 
-	_, err := oa.TryExecute(context.Background(), &noopVCursor{}, nil, false)
-	assert.ErrorContains(t, err, "min/max on types that are not comparable is not supported")
+	t.Run("null weight for a non-null value", func(t *testing.T) {
+		aggr := NewAggregateParam(AggregateMin, 0, nil, "", collations.MySQL8())
+		aggr.WCol = 1
+		oa := &ScalarAggregate{
+			Aggregates: []*AggregateParams{aggr},
+			Input: &fakePrimitive{results: []*sqltypes.Result{
+				sqltypes.MakeTestResult(fields, "b|B", "a|null"),
+			}},
+		}
+		_, err := oa.TryExecute(t.Context(), &noopVCursor{}, nil, true)
+		require.ErrorContains(t, err, "NULL weight string for a non-NULL value")
+	})
+
+	t.Run("weight string column out of range", func(t *testing.T) {
+		aggr := NewAggregateParam(AggregateMax, 0, nil, "", collations.MySQL8())
+		aggr.WCol = 2
+		oa := &ScalarAggregate{
+			Aggregates: []*AggregateParams{aggr},
+			Input:      &fakePrimitive{results: []*sqltypes.Result{input}},
+		}
+		_, err := oa.TryExecute(t.Context(), &noopVCursor{}, nil, true)
+		require.ErrorContains(t, err, "out of range")
+	})
+
+	t.Run("row shorter than its fields", func(t *testing.T) {
+		aggr := NewAggregateParam(AggregateMax, 0, nil, "", collations.MySQL8())
+		aggr.WCol = 1
+		oa := &ScalarAggregate{
+			Aggregates: []*AggregateParams{aggr},
+			Input: &fakePrimitive{results: []*sqltypes.Result{{
+				Fields: fields,
+				Rows:   []sqltypes.Row{{sqltypes.NewVarChar("a")}},
+			}}},
+		}
+		_, err := oa.TryExecute(t.Context(), &noopVCursor{}, nil, true)
+		require.ErrorContains(t, err, "out of range")
+	})
+
+	t.Run("per group", func(t *testing.T) {
+		groupFields := sqltypes.MakeTestFields(
+			"tag|col|weight_string(col)",
+			"int64|varchar|varbinary",
+		)
+		aggr := NewAggregateParam(AggregateMax, 1, nil, "", collations.MySQL8())
+		aggr.WCol = 2
+		oa := &OrderedAggregate{
+			Aggregates:  []*AggregateParams{aggr},
+			GroupByKeys: []*GroupByParams{{KeyCol: 0}},
+			Input: &fakePrimitive{results: []*sqltypes.Result{sqltypes.MakeTestResult(groupFields,
+				"1|b|B",
+				"1|A|A",
+				"2|a|A",
+				"2|null|null",
+				"3|null|null",
+			)}},
+		}
+		result, err := oa.TryExecute(t.Context(), &noopVCursor{}, nil, true)
+		require.NoError(t, err)
+		utils.MustMatch(t, sqltypes.MakeTestResult(groupFields, "1|b|B", "2|a|A", "3|null|null").Rows, result.Rows)
+	})
 }
 
 func TestOrderedAggregateStreamExecute(t *testing.T) {
