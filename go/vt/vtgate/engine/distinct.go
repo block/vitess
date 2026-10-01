@@ -78,14 +78,10 @@ func (pt *probeTable) hashCodeForRow(inputRow sqltypes.Row) (vthash.Hash, error)
 		if coerceTo == sqltypes.Unknown {
 			// Unknown has every type flag bit set, so the hash function
 			// would coerce every value to a float and collapse distinct
-			// strings into one.
-			if checkCol.WsCol != nil {
-				checkCol = checkCol.SwitchToWeightString()
-				pt.checkCols[i] = checkCol
-				coerceTo = checkCol.Type.Type()
-			} else {
-				coerceTo = inputRow[checkCol.Col].Type()
-			}
+			// strings into one. Text values have no known collation, so
+			// they fall back to the weight string below. Other values must
+			// not: MySQL returns NULL weight strings for DECIMAL and FLOAT.
+			coerceTo = inputRow[checkCol.Col].Type()
 		}
 		col := inputRow[checkCol.Col]
 		err := evalengine.NullsafeHashcode128(&hasher, col, checkCol.Type.Collation(), coerceTo, pt.sqlmode, checkCol.Type.Values())

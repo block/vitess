@@ -223,11 +223,12 @@ func TestMinMaxUsesWeightString(t *testing.T) {
 				"1|A|A",
 				"2|a|A",
 				"2|null|null",
+				"3|null|null",
 			)}},
 		}
 		result, err := oa.TryExecute(t.Context(), &noopVCursor{}, nil, true)
 		require.NoError(t, err)
-		utils.MustMatch(t, sqltypes.MakeTestResult(groupFields, "1|b|B", "2|a|A").Rows, result.Rows)
+		utils.MustMatch(t, sqltypes.MakeTestResult(groupFields, "1|b|B", "2|a|A", "3|null|null").Rows, result.Rows)
 	})
 }
 

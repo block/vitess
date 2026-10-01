@@ -237,6 +237,25 @@ func TestDistinctUnknownType(t *testing.T) {
 			"b|B", "A|A", "a|A", "B|B", "null|null", "z|Z"),
 		expectedResult: r("name", "varchar", "b", "A", "null", "z"),
 	}, {
+		name:  "text after a null uses the weight string column",
+		wsCol: &offsetOne,
+		inputs: r("name|weight_string(name)", "varchar|varbinary",
+			"null|null", "a|A", "A|A"),
+		expectedResult: r("name", "varchar", "null", "a"),
+	}, {
+		// MySQL returns NULL from WEIGHT_STRING() for DECIMAL, FLOAT and DOUBLE.
+		name:  "decimal with a null weight string column",
+		wsCol: &offsetOne,
+		inputs: r("d|weight_string(d)", "decimal|varbinary",
+			"1.5|null", "2|null", "1.5|null", "null|null"),
+		expectedResult: r("d", "decimal", "1.5", "2", "null"),
+	}, {
+		name:  "float with a null weight string column",
+		wsCol: &offsetOne,
+		inputs: r("d|weight_string(d)", "float64|varbinary",
+			"1.5|null", "2|null", "1.5|null", "null|null"),
+		expectedResult: r("d", "float64", "1.5", "2", "null"),
+	}, {
 		name:           "numbers without a weight string column",
 		inputs:         r("id", "int64", "1", "2", "1", "null"),
 		expectedResult: r("id", "int64", "1", "2", "null"),
