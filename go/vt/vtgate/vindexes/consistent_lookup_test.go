@@ -481,6 +481,29 @@ func TestConsistentLookupNoUpdate(t *testing.T) {
 	vc.verifyLog(t, []string{})
 }
 
+// MySQL has already decided under the column's collation that the value
+// changed, so a change that the connection collation treats as equal, such
+// as letter case on a case-sensitive column, must still move the backing row.
+func TestConsistentLookupUpdateCaseOnlyChange(t *testing.T) {
+	lookup := createConsistentLookup(t, "consistent_lookup", false)
+	vc := &loggingVCursor{}
+	vc.AddResult(&sqltypes.Result{}, nil)
+	vc.AddResult(&sqltypes.Result{}, nil)
+
+	err := lookup.(Lookup).Update(t.Context(), vc, []sqltypes.Value{
+		sqltypes.NewVarChar("tok-case"),
+		sqltypes.NewVarChar("é"),
+	}, []byte("test"), []sqltypes.Value{
+		sqltypes.NewVarChar("TOK-CASE"),
+		sqltypes.NewVarChar("e"),
+	})
+	require.NoError(t, err)
+	vc.verifyLog(t, []string{
+		"ExecutePost delete from t where fromc1 = :fromc1 and fromc2 = :fromc2 and toc = :toc [{fromc1 tok-case} {fromc2 é} {toc test}] true",
+		"ExecutePre insert into t(fromc1, fromc2, toc) values(:fromc1_0, :fromc2_0, :toc_0) [{fromc1_0 TOK-CASE} {fromc2_0 e} {toc_0 test}] true",
+	})
+}
+
 func TestConsistentLookupUpdateBecauseComparableTypes(t *testing.T) {
 	lookup := createConsistentLookup(t, "consistent_lookup", false)
 	vc := &loggingVCursor{}

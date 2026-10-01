@@ -25,6 +25,7 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 
+	"vitess.io/vitess/go/mysql/collations"
 	"vitess.io/vitess/go/mysql/sqlerror"
 	"vitess.io/vitess/go/sqltypes"
 	"vitess.io/vitess/go/vt/key"
@@ -441,7 +442,10 @@ func (lu *clCommon) Delete(ctx context.Context, vcursor VCursor, rowsColValues [
 func (lu *clCommon) Update(ctx context.Context, vcursor VCursor, oldValues []sqltypes.Value, ksid []byte, newValues []sqltypes.Value) error {
 	equal := true
 	for i := range oldValues {
-		result, err := evalengine.NullsafeCompare(oldValues[i], newValues[i], vcursor.Environment().CollationEnv(), vcursor.ConnCollation(), nil)
+		// MySQL only reports the vindex column as changed when it differs under the
+		// column's own collation. Compare bytes, so the connection collation cannot
+		// treat a case or accent change on a case-sensitive column as no change.
+		result, err := evalengine.NullsafeCompare(oldValues[i], newValues[i], vcursor.Environment().CollationEnv(), collations.CollationBinaryID, nil)
 		// errors from NullsafeCompare can be ignored. if they are real problems, we'll see them in the Create/Update
 		if err != nil || result != 0 {
 			equal = false

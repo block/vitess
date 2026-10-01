@@ -452,6 +452,11 @@ func buildQuery(op Operator, qb *queryBuilder) {
 		buildUnion(op, qb)
 	case *Distinct:
 		buildQuery(op.Source, qb)
+		if p, ok := op.Source.(*Projection); ok && p.DT != nil {
+			// A derived table projection only adds its columns inside the derived table,
+			// and relies on its parent to project them. DISTINCT applies to all of them.
+			qb.addProjection(&sqlparser.StarExpr{TableName: sqlparser.TableName{Name: sqlparser.NewIdentifierCS(p.DT.Alias)}})
+		}
 		statement := qb.asSelectStatement()
 		d, ok := statement.(sqlparser.Distinctable)
 		if !ok {

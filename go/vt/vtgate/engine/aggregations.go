@@ -17,6 +17,7 @@ limitations under the License.
 package engine
 
 import (
+	"bytes"
 	"fmt"
 	"strconv"
 
@@ -232,6 +233,78 @@ func (a *aggregatorMinMax) reset() {
 	a.minmax.Reset()
 }
 
+// aggregatorMinMaxWeightString implements MIN and MAX for types vtgate cannot
+// compare, by comparing the weight strings MySQL computed for each value.
+type aggregatorMinMaxWeightString struct {
+	from    int
+	wcol    int
+	max     bool
+	current sqltypes.Value
+	weight  sqltypes.Value
+}
+
+// newAggregatorMinMaxWeightString also registers the aggregator for the
+// weight string column, which must report the weight of the chosen value.
+func newAggregatorMinMaxWeightString(aggregators []aggregator, aggr *AggregateParams, max bool) (aggregator, error) {
+	if aggr.WCol >= len(aggregators) {
+		return nil, vterrors.VT13001(fmt.Sprintf("weight string column %d out of range for %d fields in MIN/MAX", aggr.WCol, len(aggregators)))
+	}
+	minmax := &aggregatorMinMaxWeightString{
+		from: aggr.Col,
+		wcol: aggr.WCol,
+		max:  max,
+	}
+	aggregators[aggr.WCol] = &aggregatorWeightStringOf{minmax: minmax}
+	return minmax, nil
+}
+
+func (a *aggregatorMinMaxWeightString) add(row []sqltypes.Value) error {
+	if a.from >= len(row) || a.wcol >= len(row) {
+		return vterrors.VT13001(fmt.Sprintf("column %d or weight string column %d out of range for a row of %d values in MIN/MAX", a.from, a.wcol, len(row)))
+	}
+	value, weight := row[a.from], row[a.wcol]
+	if value.IsNull() {
+		return nil
+	}
+	if weight.IsNull() {
+		// Comparing it as empty bytes would make this value win MIN.
+		return vterrors.VT13001("NULL weight string for a non-NULL value in MIN/MAX")
+	}
+	if !a.current.IsNull() {
+		cmp := bytes.Compare(weight.Raw(), a.weight.Raw())
+		if (a.max && cmp <= 0) || (!a.max && cmp >= 0) {
+			return nil
+		}
+	}
+	a.current, a.weight = value, weight
+	return nil
+}
+
+func (a *aggregatorMinMaxWeightString) finish(*evalengine.ExpressionEnv, collations.ID) (sqltypes.Value, error) {
+	return a.current, nil
+}
+
+func (a *aggregatorMinMaxWeightString) reset() {
+	a.current = sqltypes.NULL
+	a.weight = sqltypes.NULL
+}
+
+// aggregatorWeightStringOf reports the weight string of the value chosen by an
+// aggregatorMinMaxWeightString, so the two output columns stay consistent.
+type aggregatorWeightStringOf struct {
+	minmax *aggregatorMinMaxWeightString
+}
+
+func (*aggregatorWeightStringOf) add([]sqltypes.Value) error {
+	return nil
+}
+
+func (a *aggregatorWeightStringOf) finish(*evalengine.ExpressionEnv, collations.ID) (sqltypes.Value, error) {
+	return a.minmax.weight, nil
+}
+
+func (*aggregatorWeightStringOf) reset() {}
+
 type aggregatorSum struct {
 	from     int
 	sum      evalengine.Sum
@@ -432,11 +505,7 @@ func newAggregation(fields []*querypb.Field, aggregates []*AggregateParams, env 
 			}
 		}
 
-		if aggr.Opcode == opcode.AggregateMin || aggr.Opcode == opcode.AggregateMax {
-			if aggr.WAssigned() && !isComparable(sourceType) {
-				return nil, nil, vterrors.VT12001("min/max on types that are not comparable is not supported")
-			}
-		}
+		minMaxByWeightString := aggr.WAssigned() && !isComparable(sourceType)
 
 		switch aggr.Opcode {
 		case opcode.AggregateCountStar:
@@ -474,19 +543,33 @@ func newAggregation(fields []*querypb.Field, aggregates []*AggregateParams, env 
 			}
 
 		case opcode.AggregateMin:
-			ag = &aggregatorMin{
-				aggregatorMinMax{
-					from:   aggr.Col,
-					minmax: evalengine.NewAggregationMinMax(sourceType, aggr.CollationEnv, aggr.Type.Collation(), aggr.Type.Values()),
-				},
+			if minMaxByWeightString {
+				var err error
+				if ag, err = newAggregatorMinMaxWeightString(aggregators, aggr, false); err != nil {
+					return nil, nil, err
+				}
+			} else {
+				ag = &aggregatorMin{
+					aggregatorMinMax{
+						from:   aggr.Col,
+						minmax: evalengine.NewAggregationMinMax(sourceType, aggr.CollationEnv, aggr.Type.Collation(), aggr.Type.Values()),
+					},
+				}
 			}
 
 		case opcode.AggregateMax:
-			ag = &aggregatorMax{
-				aggregatorMinMax{
-					from:   aggr.Col,
-					minmax: evalengine.NewAggregationMinMax(sourceType, aggr.CollationEnv, aggr.Type.Collation(), aggr.Type.Values()),
-				},
+			if minMaxByWeightString {
+				var err error
+				if ag, err = newAggregatorMinMaxWeightString(aggregators, aggr, true); err != nil {
+					return nil, nil, err
+				}
+			} else {
+				ag = &aggregatorMax{
+					aggregatorMinMax{
+						from:   aggr.Col,
+						minmax: evalengine.NewAggregationMinMax(sourceType, aggr.CollationEnv, aggr.Type.Collation(), aggr.Type.Values()),
+					},
+				}
 			}
 
 		case opcode.AggregateGtid:

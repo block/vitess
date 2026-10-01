@@ -74,8 +74,17 @@ func (pt *probeTable) hashCodeForRow(inputRow sqltypes.Row) (vthash.Hash, error)
 		if i >= len(inputRow) {
 			return vthash.Hash{}, vterrors.VT13001("index out of range in row when creating the DISTINCT hash code")
 		}
+		coerceTo := checkCol.Type.Type()
+		if coerceTo == sqltypes.Unknown {
+			// Unknown has every type flag bit set, so the hash function
+			// would coerce every value to a float and collapse distinct
+			// strings into one. Text values have no known collation, so
+			// they fall back to the weight string below. Other values must
+			// not: MySQL returns NULL weight strings for DECIMAL and FLOAT.
+			coerceTo = inputRow[checkCol.Col].Type()
+		}
 		col := inputRow[checkCol.Col]
-		err := evalengine.NullsafeHashcode128(&hasher, col, checkCol.Type.Collation(), checkCol.Type.Type(), pt.sqlmode, checkCol.Type.Values())
+		err := evalengine.NullsafeHashcode128(&hasher, col, checkCol.Type.Collation(), coerceTo, pt.sqlmode, checkCol.Type.Values())
 		if err != nil {
 			if err != evalengine.UnsupportedCollationHashError || checkCol.WsCol == nil {
 				return vthash.Hash{}, err

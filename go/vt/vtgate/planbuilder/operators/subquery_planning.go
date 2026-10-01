@@ -50,6 +50,15 @@ func isMergeable(ctx *plancontext.PlanningContext, query sqlparser.TableStatemen
 			return false
 		}
 
+		// DISTINCT groups by every selected expression, so the same unique vindex check as for GROUP BY applies.
+		// It must come before the GROUP BY check, since DISTINCT is applied to the output of the grouping.
+		if node.Distinct && !slices0.ContainsFunc(node.SelectExprs.Exprs, func(expr sqlparser.SelectExpr) bool {
+			ae, ok := expr.(*sqlparser.AliasedExpr)
+			return ok && validVindex(ae.Expr)
+		}) {
+			return false
+		}
+
 		if node.GroupBy != nil && len(node.GroupBy.Exprs) > 0 {
 			// iff we are grouping, we need to check that we can perform the grouping inside a single shard, and we check that
 			// by checking that one of the grouping expressions used is a unique single column vindex.
