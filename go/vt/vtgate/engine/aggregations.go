@@ -245,20 +245,30 @@ type aggregatorMinMaxWeightString struct {
 
 // newAggregatorMinMaxWeightString also registers the aggregator for the
 // weight string column, which must report the weight of the chosen value.
-func newAggregatorMinMaxWeightString(aggregators []aggregator, aggr *AggregateParams, max bool) *aggregatorMinMaxWeightString {
+func newAggregatorMinMaxWeightString(aggregators []aggregator, aggr *AggregateParams, max bool) (aggregator, error) {
+	if aggr.WCol >= len(aggregators) {
+		return nil, vterrors.VT13001(fmt.Sprintf("weight string column %d out of range for %d fields in MIN/MAX", aggr.WCol, len(aggregators)))
+	}
 	minmax := &aggregatorMinMaxWeightString{
 		from: aggr.Col,
 		wcol: aggr.WCol,
 		max:  max,
 	}
 	aggregators[aggr.WCol] = &aggregatorWeightStringOf{minmax: minmax}
-	return minmax
+	return minmax, nil
 }
 
 func (a *aggregatorMinMaxWeightString) add(row []sqltypes.Value) error {
+	if a.from >= len(row) || a.wcol >= len(row) {
+		return vterrors.VT13001(fmt.Sprintf("column %d or weight string column %d out of range for a row of %d values in MIN/MAX", a.from, a.wcol, len(row)))
+	}
 	value, weight := row[a.from], row[a.wcol]
 	if value.IsNull() {
 		return nil
+	}
+	if weight.IsNull() {
+		// Comparing it as empty bytes would make this value win MIN.
+		return vterrors.VT13001("NULL weight string for a non-NULL value in MIN/MAX")
 	}
 	if !a.current.IsNull() {
 		cmp := bytes.Compare(weight.Raw(), a.weight.Raw())
@@ -534,7 +544,10 @@ func newAggregation(fields []*querypb.Field, aggregates []*AggregateParams, env 
 
 		case opcode.AggregateMin:
 			if minMaxByWeightString {
-				ag = newAggregatorMinMaxWeightString(aggregators, aggr, false)
+				var err error
+				if ag, err = newAggregatorMinMaxWeightString(aggregators, aggr, false); err != nil {
+					return nil, nil, err
+				}
 			} else {
 				ag = &aggregatorMin{
 					aggregatorMinMax{
@@ -546,7 +559,10 @@ func newAggregation(fields []*querypb.Field, aggregates []*AggregateParams, env 
 
 		case opcode.AggregateMax:
 			if minMaxByWeightString {
-				ag = newAggregatorMinMaxWeightString(aggregators, aggr, true)
+				var err error
+				if ag, err = newAggregatorMinMaxWeightString(aggregators, aggr, true); err != nil {
+					return nil, nil, err
+				}
 			} else {
 				ag = &aggregatorMax{
 					aggregatorMinMax{

@@ -170,6 +170,44 @@ func TestMinMaxUsesWeightString(t *testing.T) {
 		utils.MustMatch(t, sqltypes.MakeTestResult(fields, "null|null").Rows, result.Rows)
 	})
 
+	t.Run("null weight for a non-null value", func(t *testing.T) {
+		aggr := NewAggregateParam(AggregateMin, 0, nil, "", collations.MySQL8())
+		aggr.WCol = 1
+		oa := &ScalarAggregate{
+			Aggregates: []*AggregateParams{aggr},
+			Input: &fakePrimitive{results: []*sqltypes.Result{
+				sqltypes.MakeTestResult(fields, "b|B", "a|null"),
+			}},
+		}
+		_, err := oa.TryExecute(t.Context(), &noopVCursor{}, nil, true)
+		require.ErrorContains(t, err, "NULL weight string for a non-NULL value")
+	})
+
+	t.Run("weight string column out of range", func(t *testing.T) {
+		aggr := NewAggregateParam(AggregateMax, 0, nil, "", collations.MySQL8())
+		aggr.WCol = 2
+		oa := &ScalarAggregate{
+			Aggregates: []*AggregateParams{aggr},
+			Input:      &fakePrimitive{results: []*sqltypes.Result{input}},
+		}
+		_, err := oa.TryExecute(t.Context(), &noopVCursor{}, nil, true)
+		require.ErrorContains(t, err, "out of range")
+	})
+
+	t.Run("row shorter than its fields", func(t *testing.T) {
+		aggr := NewAggregateParam(AggregateMax, 0, nil, "", collations.MySQL8())
+		aggr.WCol = 1
+		oa := &ScalarAggregate{
+			Aggregates: []*AggregateParams{aggr},
+			Input: &fakePrimitive{results: []*sqltypes.Result{{
+				Fields: fields,
+				Rows:   []sqltypes.Row{{sqltypes.NewVarChar("a")}},
+			}}},
+		}
+		_, err := oa.TryExecute(t.Context(), &noopVCursor{}, nil, true)
+		require.ErrorContains(t, err, "out of range")
+	})
+
 	t.Run("per group", func(t *testing.T) {
 		groupFields := sqltypes.MakeTestFields(
 			"tag|col|weight_string(col)",
