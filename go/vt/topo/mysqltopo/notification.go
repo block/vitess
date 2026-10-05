@@ -51,7 +51,6 @@ const TopoDataTableName = "topo_data"
 // across all server instances that use the same schema.
 type notificationSystem struct {
 	schemaName string
-	serverAddr string
 
 	// MySQL database connection for queries
 	db        *sql.DB
@@ -208,12 +207,12 @@ func releaseNotificationSystemRef(ns *notificationSystem) {
 // newNotificationSystem creates a new notification system.
 func newNotificationSystem(schemaName, serverAddr string) (*notificationSystem, error) {
 	// Create database connection for queries
-	log.Info("newNotificationSystem", slog.String("serverAddr", serverAddr), slog.String("schema", schemaName))
 	cfg, err := mysqldriver.ParseDSN(serverAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse MySQL DSN: %v", err)
 	}
-	log.Info("newNotificationSystem: parsed DSN", slog.String("user", cfg.User), slog.String("addr", cfg.Addr), slog.String("db_name", cfg.DBName))
+	// serverAddr is a DSN and carries the password: log only parsed fields.
+	log.Info("newNotificationSystem", slog.String("user", cfg.User), slog.String("addr", cfg.Addr), slog.String("db_name", cfg.DBName), slog.String("schema", schemaName))
 	if cfg.DBName == "" {
 		cfg.DBName = schemaName
 	}
@@ -301,7 +300,6 @@ func newNotificationSystem(schemaName, serverAddr string) (*notificationSystem, 
 
 	ns := &notificationSystem{
 		schemaName:        schemaName,
-		serverAddr:        serverAddr,
 		db:                db,
 		isMySQL84:         isMySQL84,
 		connector:         connector,
