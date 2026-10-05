@@ -48,9 +48,11 @@ the notification system structure and sharing behavior regardless.
 package mysqltopo
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -61,8 +63,69 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"vitess.io/vitess/go/mysql/replication"
+	"vitess.io/vitess/go/vt/log"
 	"vitess.io/vitess/go/vt/topo"
 )
+
+// captureLogs routes the structured logger into a buffer for the rest of the
+// test.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	saved := log.SwapLogger(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { log.SwapLogger(saved) })
+	return &buf
+}
+
+// TestNewNotificationSystemDoesNotLogPassword pins that the server address,
+// which is a DSN carrying the password, never reaches the logs or the
+// returned error. The backend is unreachable, so this needs no MySQL.
+func TestNewNotificationSystemDoesNotLogPassword(t *testing.T) {
+	const password = "pw-sentinel-9f3c1a"
+	logs := captureLogs(t)
+
+	ns, err := newNotificationSystem("topo", "topouser:"+password+"@tcp(127.0.0.1:1)/topo")
+	require.Error(t, err)
+	require.Nil(t, ns)
+
+	// Control: the startup line was logged, so the absence check below is
+	// not vacuous.
+	require.Contains(t, logs.String(), `"msg":"newNotificationSystem"`)
+	require.Contains(t, logs.String(), `"user":"topouser"`)
+	require.Contains(t, logs.String(), `"addr":"127.0.0.1:1"`)
+
+	require.NotContains(t, logs.String(), password)
+	require.NotContains(t, err.Error(), password)
+}
+
+// TestTopoStartupDoesNotLogPassword opens a server and its notification
+// system against the test MySQL and checks that nothing logged along the way
+// contains the DSN's password.
+func TestTopoStartupDoesNotLogPassword(t *testing.T) {
+	cfg, err := mysql.ParseDSN(mySQLTopoTestAddr)
+	require.NoError(t, err)
+	if cfg.Passwd == "" {
+		t.Skip("test DSN has no password, so there is nothing to look for in the logs")
+	}
+
+	logs := captureLogs(t)
+
+	server, schemaName, cleanup := createTestServer(t, "")
+	defer cleanup()
+
+	_, err = server.getNotificationSystemForServer()
+	if err != nil && strings.Contains(err.Error(), "binary logging is not enabled") {
+		t.Skipf("Skipping test - binary logging is not enabled: %v", err)
+	}
+	require.NoError(t, err)
+
+	// Control: both the open and the notification-system startup were logged.
+	require.Contains(t, logs.String(), `"msg":"MySQL topo opened"`)
+	require.Contains(t, logs.String(), `"msg":"newNotificationSystem"`)
+	require.Contains(t, logs.String(), schemaName)
+
+	require.NotContains(t, logs.String(), cfg.Passwd)
+}
 
 // TestNotificationSystemSharing tests that two independent notification systems
 // subscribing to the same schema share the same underlying notification system.

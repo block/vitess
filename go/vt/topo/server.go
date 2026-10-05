@@ -48,6 +48,7 @@ import (
 	"os"
 	"path"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/spf13/pflag"
@@ -276,10 +277,23 @@ func Open() *Server {
 	}
 	ts, err := OpenServer(topoImplementation, topoGlobalServerAddress, topoGlobalRoot)
 	if err != nil {
-		log.Error(fmt.Sprintf("Failed to open topo server (%v,%v,%v): %v", topoImplementation, topoGlobalServerAddress, topoGlobalRoot, err))
+		log.Error(fmt.Sprintf("Failed to open topo server (%v,%v,%v): %v", topoImplementation, redactServerAddress(topoGlobalServerAddress), topoGlobalRoot, err))
 		os.Exit(1)
 	}
 	return ts
+}
+
+// redactServerAddress returns serverAddr with any credentials removed, for
+// use in logs and errors. Some implementations take a DSN as the server
+// address (mysqltopo: "user:password@tcp(host:port)/db"), so the address must
+// never be printed verbatim. Everything before the last '@' is dropped: a
+// password may itself contain '@', and over-redacting is the safe direction.
+// Addresses without an '@' (host:port lists) are returned unchanged.
+func redactServerAddress(serverAddr string) string {
+	if i := strings.LastIndex(serverAddr, "@"); i >= 0 {
+		return "<redacted>" + serverAddr[i:]
+	}
+	return serverAddr
 }
 
 // ConnForCell returns a Conn object for the given cell.
@@ -360,10 +374,10 @@ func (ts *Server) ConnForCell(ctx context.Context, cell string) (Conn, error) {
 		ts.cellConns[cell] = cellConn{ci, conn}
 		return conn, nil
 	case IsErrType(err, NoNode):
-		err = vterrors.Wrap(err, fmt.Sprintf("failed to create topo connection to %v, %v", ci.ServerAddress, ci.Root))
+		err = vterrors.Wrap(err, fmt.Sprintf("failed to create topo connection to %v, %v", redactServerAddress(ci.ServerAddress), ci.Root))
 		return nil, NewError(NoNode, err.Error())
 	default:
-		return nil, vterrors.Wrap(err, fmt.Sprintf("failed to create topo connection to %v, %v", ci.ServerAddress, ci.Root))
+		return nil, vterrors.Wrap(err, fmt.Sprintf("failed to create topo connection to %v, %v", redactServerAddress(ci.ServerAddress), ci.Root))
 	}
 }
 
