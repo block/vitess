@@ -119,6 +119,23 @@ func TestSplitStatementToPieces(t *testing.T) {
 			input:  ";;; create table t1 (id int primary key);;; ;create table t2 (id int primary key);",
 			output: " create table t1 (id int primary key);create table t2 (id int primary key)",
 		}, {
+			// A one-byte final statement is a statement too.
+			input:     "select 1;x",
+			output:    "select 1;x",
+			lenWanted: 2,
+		}, {
+			input:     "select 1;'",
+			output:    "select 1;'",
+			lenWanted: 2,
+		}, {
+			input:     "select 1;x;",
+			output:    "select 1;x",
+			lenWanted: 2,
+		}, {
+			input:     "select 1; ",
+			output:    "select 1",
+			lenWanted: 1,
+		}, {
 			// The input doesn't have to be valid SQL statements!
 			input:  ";create table t1 ;create table t2 (id;",
 			output: "create table t1 ;create table t2 (id",
