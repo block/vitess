@@ -190,8 +190,7 @@ func TestSplitStatementToPieces(t *testing.T) {
 			require.Equal(t, tcase.output, out)
 
 			var yielded []string
-			for piece, err := range parser.SplitStatements(tcase.input) {
-				require.NoError(t, err)
+			for piece := range parser.SplitStatements(tcase.input) {
 				yielded = append(yielded, piece)
 			}
 			require.Equal(t, stmtPieces, yielded, "SplitStatements and SplitStatementToPieces disagree")
@@ -204,8 +203,7 @@ func TestSplitStatementToPieces(t *testing.T) {
 func TestSplitStatementsStopsEarly(t *testing.T) {
 	parser := NewTestParser()
 	first := func(blob string) (string, int) {
-		for piece, err := range parser.SplitStatements(blob) {
-			require.NoError(t, err)
+		for piece := range parser.SplitStatements(blob) {
 			return piece, 1
 		}
 		return "", 0
@@ -225,8 +223,7 @@ func TestSplitStatementsEmptyAndFastPaths(t *testing.T) {
 	parser := NewTestParser()
 	collect := func(blob string) []string {
 		var pieces []string
-		for piece, err := range parser.SplitStatements(blob) {
-			require.NoError(t, err)
+		for piece := range parser.SplitStatements(blob) {
 			pieces = append(pieces, piece)
 		}
 		return pieces
@@ -236,4 +233,8 @@ func TestSplitStatementsEmptyAndFastPaths(t *testing.T) {
 	require.Equal(t, []string{"select 1"}, collect("select 1"))
 	require.Equal(t, []string{"select 1"}, collect("select 1;"))
 	require.Equal(t, []string{"select 1", " select 2"}, collect("select 1; select 2"))
+	// Malformed input is a piece like any other; parsing it is what fails.
+	require.Equal(t, []string{"select 1", " select 'a\\'; select 2"}, collect("select 1; select 'a\\'; select 2"))
+	_, err := parser.Parse(" select 'a\\'; select 2")
+	require.Error(t, err)
 }

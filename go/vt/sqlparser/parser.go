@@ -276,8 +276,12 @@ func matchesCreateProcedurePrefix(tokens []int) bool {
 }
 
 // SplitStatementToPieces splits raw sql statement that may have multi sql pieces to sql pieces
-// returns the sql pieces blob contains; or error if sql cannot be parsed.
+// returns the sql pieces blob contains.
 // It collects every piece; SplitStatements yields them one at a time.
+//
+// err is always nil. The splitter only tokenizes: malformed input, such as an
+// unterminated string, comes back as a piece like any other, and is rejected
+// when that piece is parsed.
 func (p *Parser) SplitStatementToPieces(blob string) (pieces []string, err error) {
 	// fast path: the vast majority of SQL statements do not have semicolons in them
 	if blob == "" {
@@ -291,10 +295,7 @@ func (p *Parser) SplitStatementToPieces(blob string) (pieces []string, err error
 	}
 
 	pieces = make([]string, 0, 16)
-	for piece, err := range p.splitStatements(blob) {
-		if err != nil {
-			return pieces, err
-		}
+	for piece := range p.splitStatements(blob) {
 		pieces = append(pieces, piece)
 	}
 	return pieces, nil
@@ -303,25 +304,27 @@ func (p *Parser) SplitStatementToPieces(blob string) (pieces []string, err error
 // SplitStatements returns an iterator over the statements of blob, split
 // exactly as SplitStatementToPieces splits them, but one at a time: a caller
 // that runs each statement as it is yielded, or stops early, never holds
-// more than one piece, however many statements blob contains. If the
-// tokenizer reports an error, it is yielded last, with an empty piece, after
-// every piece before it.
-func (p *Parser) SplitStatements(blob string) iter.Seq2[string, error] {
-	return func(yield func(string, error) bool) {
+// more than one piece, however many statements blob contains.
+//
+// There is no error to report. The splitter only tokenizes: malformed input,
+// such as an unterminated string, is yielded as a piece like any other, and
+// is rejected when that piece is parsed.
+func (p *Parser) SplitStatements(blob string) iter.Seq[string] {
+	return func(yield func(string) bool) {
 		// fast path: the vast majority of SQL statements do not have semicolons in them
 		if blob == "" {
 			return
 		}
 		switch strings.IndexByte(blob, ';') {
 		case -1: // if there is no semicolon, yield blob as a whole
-			yield(blob, nil)
+			yield(blob)
 			return
 		case len(blob) - 1: // if there's a single semicolon, and it's the last character, yield blob without it
-			yield(blob[:len(blob)-1], nil)
+			yield(blob[:len(blob)-1])
 			return
 		}
-		for piece, err := range p.splitStatements(blob) {
-			if !yield(piece, err) {
+		for piece := range p.splitStatements(blob) {
+			if !yield(piece) {
 				return
 			}
 		}
@@ -329,8 +332,8 @@ func (p *Parser) SplitStatements(blob string) iter.Seq2[string, error] {
 }
 
 // splitStatements is SplitStatements without the fast paths.
-func (p *Parser) splitStatements(blob string) iter.Seq2[string, error] {
-	return func(yield func(string, error) bool) {
+func (p *Parser) splitStatements(blob string) iter.Seq[string] {
+	return func(yield func(string) bool) {
 		tokenizer := p.NewStringTokenizer(blob)
 
 		tkn := 0
@@ -339,7 +342,6 @@ func (p *Parser) splitStatements(blob string) iter.Seq2[string, error] {
 		emptyStatement := true
 		var startTokens []int // holds the first tokens of the current statement
 
-	loop:
 		for {
 			tkn, _ = tokenizer.Scan()
 			switch tkn {
@@ -351,7 +353,7 @@ func (p *Parser) splitStatements(blob string) iter.Seq2[string, error] {
 					continue
 				}
 				if !emptyStatement {
-					if !yield(stmt, nil) {
+					if !yield(stmt) {
 						return
 					}
 					// We can now reset the variables for the next statement.
@@ -365,12 +367,10 @@ func (p *Parser) splitStatements(blob string) iter.Seq2[string, error] {
 				if stmtBegin < blobTail {
 					stmt = blob[stmtBegin : blobTail+1]
 					if !emptyStatement {
-						if !yield(stmt, nil) {
-							return
-						}
+						yield(stmt)
 					}
 				}
-				break loop
+				return
 			case COMMENT:
 				// Skip comments entirely without altering the token list.
 				continue
@@ -383,10 +383,6 @@ func (p *Parser) splitStatements(blob string) iter.Seq2[string, error] {
 				}
 				emptyStatement = false
 			}
-		}
-
-		if err := tokenizer.LastError; err != nil {
-			yield("", err)
 		}
 	}
 }
