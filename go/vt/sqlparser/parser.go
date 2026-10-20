@@ -363,8 +363,10 @@ func (p *Parser) splitStatements(blob string) iter.Seq[string] {
 				}
 				stmtBegin = tokenizer.Pos
 			case 0, eofChar:
+				// The final statement is blob[stmtBegin:tokenizer.Pos]; it is
+				// non-empty even when it is a single byte.
 				blobTail := tokenizer.Pos - 1
-				if stmtBegin < blobTail {
+				if stmtBegin <= blobTail {
 					stmt = blob[stmtBegin : blobTail+1]
 					if !emptyStatement {
 						yield(stmt)
