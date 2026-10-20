@@ -274,7 +274,23 @@ func NewServer(serverAddr, root string) (*Server, error) {
 // An RDS address gets verified TLS with no wiring here: block/mysql applies it
 // in Config.normalize when the DSN asked for nothing else, so the trust store
 // and the endpoint check live in the driver rather than in a copy per consumer.
+//
+// Every connection runs with time_zone='+00:00', whatever the server's default
+// or the DSN asks for. Lock and election expiries are computed in Go, sent as
+// TIMESTAMP literals rendered in the driver's Loc (UTC), and compared against
+// the server's NOW(). MySQL reads a TIMESTAMP literal, and evaluates NOW(), in
+// the session time zone, so on a server whose zone is not UTC the two sides
+// disagree by the zone's offset: ahead of UTC, every lock is born expired (Check
+// fails and the next acquirer reaps it); behind UTC, a dead holder's lock
+// outlives its TTL by the offset. Pinning both the session zone and Loc to UTC
+// makes the comparison exact.
 func connect(cfg *mysql.Config) (*sql.DB, error) {
+	cfg = cfg.Clone()
+	cfg.Loc = time.UTC
+	if cfg.Params == nil {
+		cfg.Params = make(map[string]string)
+	}
+	cfg.Params["time_zone"] = "'+00:00'"
 	db, err := sql.Open(driverName, cfg.FormatDSN())
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MySQL topo at %s (schema %q, user %q): %v", cfg.Addr, cfg.DBName, cfg.User, err)
