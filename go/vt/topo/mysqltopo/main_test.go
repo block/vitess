@@ -133,6 +133,12 @@ func generateRandomSchemaName() string {
 
 // createTestServer creates a test server with a specified schema name
 func createTestServer(t *testing.T, schemaName string) (*Server, string, func()) {
+	return createTestServerWithDSN(t, schemaName, nil)
+}
+
+// createTestServerWithDSN is createTestServer with a hook that edits the DSN
+// the server is opened with (the schema is still created with the original).
+func createTestServerWithDSN(t *testing.T, schemaName string, editDSN func(*mysql.Config)) (*Server, string, func()) {
 	cfg, err := mysql.ParseDSN(mySQLTopoTestAddr)
 	require.NoError(t, err)
 
@@ -150,6 +156,9 @@ func createTestServer(t *testing.T, schemaName string) (*Server, string, func())
 	// Create the server with the new schema. NewServer no longer auto-creates
 	// the topo schema, so initialize it explicitly first (as a bootstrap would).
 	cfg.DBName = schemaName
+	if editDSN != nil {
+		editDSN(cfg)
+	}
 	testAddr := cfg.FormatDSN()
 	require.NoError(t, CreateSchema(testAddr))
 	server, err := NewServer(testAddr, "/test")

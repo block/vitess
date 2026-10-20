@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/block/mysql"
 	"github.com/stretchr/testify/require"
 
 	"vitess.io/vitess/go/vt/topo"
@@ -234,4 +235,73 @@ func TestAcquireLockRejectsNonPositiveTTL(t *testing.T) {
 	lock, err := server.LockWithTTL(ctx, "ttltest", "holder", 30*time.Second)
 	require.NoError(t, err)
 	require.NoError(t, lock.Unlock(ctx))
+}
+
+// TestLockExpiryIndependentOfSessionTimeZone verifies that lock and election
+// expiries mean the same thing whatever time zone a new session would start
+// in. Expiries are computed in Go and compared against NOW(); MySQL reads the
+// TIMESTAMP literal and evaluates NOW() in the session time zone, so unless
+// the package pins that zone to UTC, a server whose zone is ahead of UTC
+// writes every lock already expired, and one behind UTC keeps a dead holder's
+// lock past its TTL by the offset.
+//
+// A time_zone DSN parameter stands in for the server's default zone: both
+// decide the zone a new session starts in, and the DSN form keeps the test
+// from changing the shared test server's global setting.
+func TestLockExpiryIndependentOfSessionTimeZone(t *testing.T) {
+	for _, zone := range []string{"+05:30", "-07:00"} {
+		t.Run(zone, func(t *testing.T) {
+			server, _, cleanup := createTestServerWithDSN(t, "", func(cfg *mysql.Config) {
+				if cfg.Params == nil {
+					cfg.Params = make(map[string]string)
+				}
+				cfg.Params["time_zone"] = "'" + zone + "'"
+			})
+			defer cleanup()
+
+			ctx := t.Context()
+
+			// expires_at is a TIMESTAMP(0): MySQL rounds the fractional
+			// second, so an expiry can land up to a second past the TTL. The
+			// offsets being guarded against are hours.
+			const slack = 2
+
+			_, err := server.Create(ctx, "tzlock/somefile", []byte("data"))
+			require.NoError(t, err)
+
+			const ttl = 30 * time.Second
+			lock, err := server.LockWithTTL(ctx, "tzlock", "holder", ttl)
+			require.NoError(t, err)
+			require.NoError(t, lock.Check(ctx), "a fresh lock must not be born expired")
+
+			var remaining int
+			require.NoError(t, server.db.QueryRowContext(ctx,
+				"SELECT TIMESTAMPDIFF(SECOND, NOW(), expires_at) FROM topo_locks WHERE path = ?",
+				server.resolvePath("tzlock")).Scan(&remaining))
+			require.Greater(t, remaining, 0, "lock expiry must be in the future")
+			require.LessOrEqual(t, remaining, int(ttl/time.Second)+slack, "lock expiry must not exceed its TTL")
+
+			_, err = server.TryLock(ctx, "tzlock", "other-holder")
+			require.True(t, topo.IsErrType(err, topo.NodeExists), "a live lock must not be reapable, got: %v", err)
+			require.NoError(t, lock.Unlock(ctx))
+
+			lp, err := server.NewLeaderParticipation("tz-election", "participant")
+			require.NoError(t, err)
+			defer lp.Stop()
+			_, err = lp.WaitForLeadership()
+			require.NoError(t, err)
+			leaderID, err := lp.GetCurrentLeaderID(ctx)
+			require.NoError(t, err)
+			require.Equal(t, "participant", leaderID, "a fresh election must not be born expired")
+			require.NoError(t, server.db.QueryRowContext(ctx,
+				"SELECT TIMESTAMPDIFF(SECOND, NOW(), expires_at) FROM topo_elections WHERE name = ?",
+				"tz-election").Scan(&remaining))
+			require.Greater(t, remaining, 0, "election expiry must be in the future")
+			require.LessOrEqual(t, remaining, electionTTL+slack, "election expiry must not exceed its TTL")
+
+			var sessionZone string
+			require.NoError(t, server.db.QueryRowContext(ctx, "SELECT @@session.time_zone").Scan(&sessionZone))
+			require.Equal(t, "+00:00", sessionZone)
+		})
+	}
 }
