@@ -19,6 +19,7 @@ package sqlparser
 import (
 	"errors"
 	"fmt"
+	"iter"
 	"strconv"
 	"strings"
 	"sync"
@@ -275,7 +276,12 @@ func matchesCreateProcedurePrefix(tokens []int) bool {
 }
 
 // SplitStatementToPieces splits raw sql statement that may have multi sql pieces to sql pieces
-// returns the sql pieces blob contains; or error if sql cannot be parsed.
+// returns the sql pieces blob contains.
+// It collects every piece; SplitStatements yields them one at a time.
+//
+// err is always nil. The splitter only tokenizes: malformed input, such as an
+// unterminated string, comes back as a piece like any other, and is rejected
+// when that piece is parsed.
 func (p *Parser) SplitStatementToPieces(blob string) (pieces []string, err error) {
 	// fast path: the vast majority of SQL statements do not have semicolons in them
 	if blob == "" {
@@ -289,58 +295,96 @@ func (p *Parser) SplitStatementToPieces(blob string) (pieces []string, err error
 	}
 
 	pieces = make([]string, 0, 16)
-	tokenizer := p.NewStringTokenizer(blob)
+	for piece := range p.splitStatements(blob) {
+		pieces = append(pieces, piece)
+	}
+	return pieces, nil
+}
 
-	tkn := 0
-	var stmt string
-	stmtBegin := 0
-	emptyStatement := true
-	var startTokens []int // holds the first tokens of the current statement
-
-loop:
-	for {
-		tkn, _ = tokenizer.Scan()
-		switch tkn {
-		case ';':
-			// Potential end of the statement.
-			stmt = blob[stmtBegin : tokenizer.Pos-1]
-			// If it's a create procedure statement and is incomplete, skip appending.
-			if matchesCreateProcedurePrefix(startTokens) && p.IsStatementIncomplete(stmt) {
-				continue
+// SplitStatements returns an iterator over the statements of blob, split
+// exactly as SplitStatementToPieces splits them, but one at a time: a caller
+// that runs each statement as it is yielded, or stops early, never holds
+// more than one piece, however many statements blob contains.
+//
+// There is no error to report. The splitter only tokenizes: malformed input,
+// such as an unterminated string, is yielded as a piece like any other, and
+// is rejected when that piece is parsed.
+func (p *Parser) SplitStatements(blob string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		// fast path: the vast majority of SQL statements do not have semicolons in them
+		if blob == "" {
+			return
+		}
+		switch strings.IndexByte(blob, ';') {
+		case -1: // if there is no semicolon, yield blob as a whole
+			yield(blob)
+			return
+		case len(blob) - 1: // if there's a single semicolon, and it's the last character, yield blob without it
+			yield(blob[:len(blob)-1])
+			return
+		}
+		for piece := range p.splitStatements(blob) {
+			if !yield(piece) {
+				return
 			}
-			if !emptyStatement {
-				pieces = append(pieces, stmt)
-				// We can now reset the variables for the next statement.
-				// It starts off as an empty statement.
-				emptyStatement = true
-				startTokens = startTokens[:0] // clear token slice
-			}
-			stmtBegin = tokenizer.Pos
-		case 0, eofChar:
-			blobTail := tokenizer.Pos - 1
-			if stmtBegin < blobTail {
-				stmt = blob[stmtBegin : blobTail+1]
-				if !emptyStatement {
-					pieces = append(pieces, stmt)
-				}
-			}
-			break loop
-		case COMMENT:
-			// Skip comments entirely without altering the token list.
-			continue
-		default:
-			// If we're at the very start of a statement, or we haven't filled out enough tokens
-			// for our valid prefix match (assuming our longest valid sequence is 10 tokens),
-			// accumulate the token.
-			if len(startTokens) < 10 {
-				startTokens = append(startTokens, tkn)
-			}
-			emptyStatement = false
 		}
 	}
+}
 
-	err = tokenizer.LastError
-	return
+// splitStatements is SplitStatements without the fast paths.
+func (p *Parser) splitStatements(blob string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		tokenizer := p.NewStringTokenizer(blob)
+
+		tkn := 0
+		var stmt string
+		stmtBegin := 0
+		emptyStatement := true
+		var startTokens []int // holds the first tokens of the current statement
+
+		for {
+			tkn, _ = tokenizer.Scan()
+			switch tkn {
+			case ';':
+				// Potential end of the statement.
+				stmt = blob[stmtBegin : tokenizer.Pos-1]
+				// If it's a create procedure statement and is incomplete, skip yielding.
+				if matchesCreateProcedurePrefix(startTokens) && p.IsStatementIncomplete(stmt) {
+					continue
+				}
+				if !emptyStatement {
+					if !yield(stmt) {
+						return
+					}
+					// We can now reset the variables for the next statement.
+					// It starts off as an empty statement.
+					emptyStatement = true
+					startTokens = startTokens[:0] // clear token slice
+				}
+				stmtBegin = tokenizer.Pos
+			case 0, eofChar:
+				blobTail := tokenizer.Pos - 1
+				if stmtBegin < blobTail {
+					stmt = blob[stmtBegin : blobTail+1]
+					if !emptyStatement {
+						yield(stmt)
+					}
+				}
+				return
+			case COMMENT:
+				// Skip comments entirely without altering the token list.
+				continue
+			default:
+				// If we're at the very start of a statement, or we haven't filled out enough tokens
+				// for our valid prefix match (assuming our longest valid sequence is 10 tokens),
+				// accumulate the token.
+				if len(startTokens) < 10 {
+					startTokens = append(startTokens, tkn)
+				}
+				emptyStatement = false
+			}
+		}
+	}
 }
 
 // IsStatementIncomplete returns true if the statement is incomplete.

@@ -618,9 +618,10 @@ func (tkn *Tokenizer) scanStringSlow(buffer *strings.Builder, delim uint16, typ 
 			buffer.WriteString(tkn.buf[start:tkn.Pos])
 			if tkn.Pos >= len(tkn.buf) {
 				// Reached the end of the buffer without finding a delim or
-				// escape character.
-				tkn.skip(1)
-				continue
+				// escape character: the string is unterminated. Pos stays
+				// at the end of the buffer; skipping past it would leave
+				// callers that slice the buffer by Pos out of range.
+				return LEX_ERROR, buffer.String()
 			}
 		}
 		tkn.skip(1) // Read one past the delim or escape character.
