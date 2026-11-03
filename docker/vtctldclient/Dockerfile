@@ -1,4 +1,4 @@
-FROM golang:1.26.8-bookworm@sha256:bc6beb46032d45f421cf400036bf031cdc64f683ba9cdc124e31d063e71670bd AS builder
+FROM golang:1.26.10-bookworm@sha256:ee3901c61e423732605a51f1b8157c849ec01194ea0a274213b5202b2c11e7bf AS builder
 
 WORKDIR /vt/src/vitess.io/vitess
 
