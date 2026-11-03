@@ -59,7 +59,10 @@ install_mysql_tarball() {
 	local archive="mysql-${version}-linux-glibc2.28-aarch64.tar.xz"
 	local source="/tmp/${archive}"
 
-	do_fetch "https://cdn.mysql.com/Downloads/MySQL-${series}/${archive}" "${source}"
+	# Oracle serves only the newest release of a series from Downloads/ and
+	# moves the older ones to archives/.
+	do_fetch "https://cdn.mysql.com/Downloads/MySQL-${series}/${archive}" "${source}" ||
+		do_fetch "https://cdn.mysql.com/archives/mysql-${series}/${archive}" "${source}"
 	tar -xJf "${source}" -C /usr/local --strip-components=1
 }
 
