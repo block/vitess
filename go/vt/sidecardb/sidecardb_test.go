@@ -29,6 +29,7 @@ import (
 	"vitess.io/vitess/go/vt/sqlparser"
 	"vitess.io/vitess/go/vt/vtenv"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"vitess.io/vitess/go/stats"
@@ -184,6 +185,23 @@ func TestMiscSidecarDB(t *testing.T) {
 
 	require.False(t, MatchesInitQuery("abc"))
 	require.True(t, MatchesInitQuery("CREATE TABLE IF NOT EXISTS _vt.vreplication"))
+}
+
+func TestMatchesInitQueryUnqualifiedSidecarDDL(t *testing.T) {
+	once.Do(func() {
+		loadSchemaDefinitions(sqlparser.NewTestParser())
+	})
+	require.NotEmpty(t, sidecarTables)
+
+	for _, table := range sidecarTables {
+		assert.True(t, MatchesInitQuery("CREATE TABLE IF NOT EXISTS "+table.name+" (id int)"), table.name)
+		assert.True(t, MatchesInitQuery("create table if not exists `"+table.name+"` (id int)"), table.name)
+		assert.True(t, MatchesInitQuery("ALTER TABLE "+table.name+" ADD COLUMN c int"), table.name)
+		assert.True(t, MatchesInitQuery("alter table `"+table.name+"` add column c int"), table.name)
+	}
+	assert.False(t, MatchesInitQuery("ALTER TABLE not_a_sidecar_table ADD COLUMN c int"))
+	assert.False(t, MatchesInitQuery("CREATE TABLE IF NOT EXISTS not_a_sidecar_table (id int)"))
+	assert.False(t, MatchesInitQuery("update _vt.vreplication set message='VStreamer is not open' where id=1"))
 }
 
 // test the logic that confirms that the user defined schema's table name and qualifier are valid

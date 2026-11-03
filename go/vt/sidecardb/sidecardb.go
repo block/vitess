@@ -27,6 +27,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"vitess.io/vitess/go/constants/sidecar"
 	"vitess.io/vitess/go/history"
@@ -77,6 +78,11 @@ const (
 
 var (
 	sidecarTables []*sidecarTable
+	// sidecarTableDDL matches an unqualified CREATE TABLE IF NOT EXISTS or
+	// ALTER TABLE of any table in sidecarTables. It is compiled once, when
+	// the schema definitions are loaded, because MatchesInitQuery runs for
+	// every query a test's fake database receives.
+	sidecarTableDDL atomic.Pointer[regexp.Regexp]
 
 	// All tables needed in the sidecar database have
 	// their schema in the schema subdirectory.
@@ -187,6 +193,14 @@ func loadSchemaDefinitions(parser *sqlparser.Parser) {
 	if err != nil {
 		log.Error(fmt.Sprintf("error loading schema files: %+v", err))
 	}
+	if len(sidecarTables) == 0 {
+		return
+	}
+	names := make([]string, 0, len(sidecarTables))
+	for _, table := range sidecarTables {
+		names = append(names, regexp.QuoteMeta(table.name))
+	}
+	sidecarTableDDL.Store(regexp.MustCompile(fmt.Sprintf("(?i)(CREATE TABLE IF NOT EXISTS|ALTER TABLE) `?(%s)`?", strings.Join(names, "|"))))
 }
 
 // printCallerDetails is a helper for dev debugging.
@@ -634,12 +648,8 @@ func MatchesInitQuery(query string) bool {
 		}
 	}
 	// Also match unqualified DDLs targeting known sidecar tables.
-	for _, table := range sidecarTables {
-		quotedName := regexp.QuoteMeta(table.name)
-		pattern := fmt.Sprintf("(?i)(CREATE TABLE IF NOT EXISTS|ALTER TABLE) `?%s`?", quotedName)
-		if match, _ := regexp.MatchString(pattern, query); match {
-			return true
-		}
+	if re := sidecarTableDDL.Load(); re != nil && re.MatchString(query) {
+		return true
 	}
 	return false
 }
