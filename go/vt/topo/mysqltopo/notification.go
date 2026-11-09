@@ -432,6 +432,10 @@ func (ns *notificationSystem) run() {
 		}
 		var err error
 		ns.binlogConn, err = binlog.NewBinlogConnection(ns.connector)
+		if err == nil {
+			// Heartbeats let MySQL release idle dump threads after client disconnects.
+			_, err = ns.binlogConn.ExecuteFetch(fmt.Sprintf("SET @master_heartbeat_period=%d", time.Second), 0, false)
+		}
 		if err != nil {
 			if ns.ctx.Err() != nil {
 				return // Context cancelled

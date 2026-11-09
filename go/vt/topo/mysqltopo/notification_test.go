@@ -449,6 +449,17 @@ func TestNotificationSystemCleanup(t *testing.T) {
 	ns2, err := server2.getNotificationSystemForServer()
 	require.NoError(t, err)
 
+	monitorDB, err := sql.Open(driverName, mySQLTopoTestAddr)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, monitorDB.Close()) })
+	connectionID := ns1.binlogConn.ConnectionID
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		var count int
+		err := monitorDB.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM information_schema.processlist WHERE id = ? AND command LIKE 'Binlog Dump%'", connectionID).Scan(&count)
+		require.NoError(c, err)
+		assert.Equal(c, 1, count)
+	}, waitTimeout, 100*time.Millisecond)
+
 	// They should be the same instance
 	assert.Equal(t, ns1, ns2, "Both servers should share the same notification system")
 
@@ -476,6 +487,12 @@ func TestNotificationSystemCleanup(t *testing.T) {
 	_, exists = notificationSystems[sharedSchemaName]
 	notificationSystemsMu.RUnlock()
 	assert.False(t, exists, "Notification system should be cleaned up after closing all servers")
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		var count int
+		err := monitorDB.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM information_schema.processlist WHERE id = ?", connectionID).Scan(&count)
+		require.NoError(c, err)
+		assert.Zero(c, count, "MySQL must release the idle binlog dump after its client closes")
+	}, waitTimeout, 100*time.Millisecond)
 }
 
 // TestNotificationSystemWatcherCleanup tests that watchers are properly cleaned up
