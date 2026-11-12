@@ -148,14 +148,22 @@ func TestString(t *testing.T) {
 		in:   "'hello\\",
 		id:   LEX_ERROR,
 		want: "hello",
+	}, {
+		// Unterminated after an escape, with text up to the end.
+		in:   "'a\\'; select 2",
+		id:   LEX_ERROR,
+		want: "a'; select 2",
 	}}
 
 	parser := NewTestParser()
 	for _, tcase := range testcases {
 		t.Run(tcase.in, func(t *testing.T) {
-			id, got := parser.NewStringTokenizer(tcase.in).Scan()
+			tkn := parser.NewStringTokenizer(tcase.in)
+			id, got := tkn.Scan()
 			require.Equal(t, tcase.id, id, "Scan(%q) = (%s), want (%s)", tcase.in, tokenName(id), tokenName(tcase.id))
 			require.Equal(t, tcase.want, string(got))
+			// Callers slice the input by Pos.
+			require.LessOrEqual(t, tkn.Pos, len(tcase.in))
 		})
 	}
 }

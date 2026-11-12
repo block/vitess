@@ -124,6 +124,23 @@ func TestSplitStatementToPieces(t *testing.T) {
 			input:  ";;; create table t1 (id int primary key);;; ;create table t2 (id int primary key);",
 			output: " create table t1 (id int primary key);create table t2 (id int primary key)",
 		}, {
+			// A one-byte final statement is a statement too.
+			input:     "select 1;x",
+			output:    "select 1;x",
+			lenWanted: 2,
+		}, {
+			input:     "select 1;'",
+			output:    "select 1;'",
+			lenWanted: 2,
+		}, {
+			input:     "select 1;x;",
+			output:    "select 1;x",
+			lenWanted: 2,
+		}, {
+			input:     "select 1; ",
+			output:    "select 1",
+			lenWanted: 1,
+		}, {
 			// The input doesn't have to be valid SQL statements!
 			input:  ";create table t1 ;create table t2 (id;",
 			output: "create table t1 ;create table t2 (id",
@@ -171,6 +188,11 @@ func TestSplitStatementToPieces(t *testing.T) {
 			// Create procedure with definer id at_id.
 			input:     "create DEFINER=`root`@`localhost` procedure p1 (in country CHAR(3))  begin declare abc DECIMAL(14,2); DECLARE def DECIMAL(14,2); end",
 			lenWanted: 1,
+		}, {
+			// An unterminated string ending in an escaped quote is one
+			// (malformed) piece; the tokenizer must not run past the end.
+			input:     `select 'a\'; select 2`,
+			lenWanted: 1,
 		},
 	}
 
@@ -188,6 +210,12 @@ func TestSplitStatementToPieces(t *testing.T) {
 			}
 			out := strings.Join(stmtPieces, ";")
 			require.Equal(t, tcase.output, out)
+
+			var yielded []string
+			for piece := range parser.SplitStatements(tcase.input) {
+				yielded = append(yielded, piece)
+			}
+			require.Equal(t, stmtPieces, yielded, "SplitStatements and SplitStatementToPieces disagree")
 		})
 	}
 }
@@ -258,4 +286,45 @@ func TestPartialDDLDoesNotLogSensitiveInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+// SplitStatements yields one piece at a time: a caller that stops early has
+// not paid for the pieces after it, however many there are.
+func TestSplitStatementsStopsEarly(t *testing.T) {
+	parser := NewTestParser()
+	first := func(blob string) (string, int) {
+		for piece := range parser.SplitStatements(blob) {
+			return piece, 1
+		}
+		return "", 0
+	}
+	small := "select 1;select 2"
+	large := "select 1;" + strings.Repeat("x;", 1<<16)
+	piece, n := first(large)
+	require.Equal(t, "select 1", piece)
+	require.Equal(t, 1, n)
+	allocs := func(blob string) float64 {
+		return testing.AllocsPerRun(10, func() { first(blob) })
+	}
+	require.LessOrEqual(t, allocs(large), allocs(small))
+}
+
+func TestSplitStatementsEmptyAndFastPaths(t *testing.T) {
+	parser := NewTestParser()
+	collect := func(blob string) []string {
+		var pieces []string
+		for piece := range parser.SplitStatements(blob) {
+			pieces = append(pieces, piece)
+		}
+		return pieces
+	}
+	require.Empty(t, collect(""))
+	require.Empty(t, collect(";;"))
+	require.Equal(t, []string{"select 1"}, collect("select 1"))
+	require.Equal(t, []string{"select 1"}, collect("select 1;"))
+	require.Equal(t, []string{"select 1", " select 2"}, collect("select 1; select 2"))
+	// Malformed input is a piece like any other; parsing it is what fails.
+	require.Equal(t, []string{"select 1", " select 'a\\'; select 2"}, collect("select 1; select 'a\\'; select 2"))
+	_, err := parser.Parse(" select 'a\\'; select 2")
+	require.Error(t, err)
 }
