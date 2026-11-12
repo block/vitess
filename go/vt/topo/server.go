@@ -140,13 +140,6 @@ type Server struct {
 	// the two.
 	globalReadOnlyCell Conn
 
-	// globalServerAddress is the server address used to create the global
-	// cell connection. It is stored so that ConnForCell can create
-	// cell-specific connections using the global credentials when
-	// HasGlobalReadOnlyCell is true (e.g., MySQL topo where all cells
-	// share the same database but need different root paths).
-	globalServerAddress string
-
 	// factory allows the creation of connections to various backends.
 	// It is set at construction time.
 	factory Factory
@@ -246,11 +239,10 @@ func NewWithFactory(factory Factory, serverAddress, root string) (*Server, error
 	}
 
 	return &Server{
-		globalCell:          conn,
-		globalReadOnlyCell:  connReadOnly,
-		globalServerAddress: serverAddress,
-		factory:             factory,
-		cellConns:           make(map[string]cellConn),
+		globalCell:         conn,
+		globalReadOnlyCell: connReadOnly,
+		factory:            factory,
+		cellConns:          make(map[string]cellConn),
 	}, nil
 }
 
@@ -285,7 +277,7 @@ func Open() *Server {
 
 // redactServerAddress returns serverAddr with any credentials removed, for
 // use in logs and errors. Some implementations take a DSN as the server
-// address (mysqltopo: "user:password@tcp(host:port)/db"), so the address must
+// address (for example "user:password@tcp(host:port)/db"), so the address must
 // never be printed verbatim. Everything before the last '@' is dropped: a
 // password may itself contain '@', and over-redacting is the safe direction.
 // Addresses without an '@' (host:port lists) are returned unchanged.
@@ -308,41 +300,11 @@ func (ts *Server) ConnForCell(ctx context.Context, cell string) (Conn, error) {
 		return ts.globalCell, nil
 	}
 
-	// If the factory has a global read-only cell, it means all cells share
-	// the same connection (e.g., MySQL topo where all cells use the same database).
-	// In this case, we should use the global connection for all cells.
-	// We still need to fetch CellInfo to validate the cell exists, but we don't
-	// create a separate connection.
+	// Fetch cell cluster addresses from the global cluster.
+	// We can use the GlobalReadOnlyCell for this call.
 	ci, err := ts.GetCellInfo(ctx, cell, false /*strongRead*/)
 	if err != nil {
 		return nil, err
-	}
-
-	// Check if the factory uses a shared global connection (e.g., MySQL topo
-	// where all cells share the same database). In this case, we create a
-	// cell-specific connection using the global server address (which has
-	// credentials) but with the cell's root path for proper path isolation.
-	if ts.factory.HasGlobalReadOnlyCell(ci.ServerAddress, ci.Root) {
-		ts.mu.Lock()
-		defer ts.mu.Unlock()
-		cc, ok := ts.cellConns[cell]
-		if ok && ci.ServerAddress == cc.cellInfo.ServerAddress && ci.Root == cc.cellInfo.Root {
-			return cc.conn, nil
-		}
-		// Cell info changed (ServerAddress or Root) — close the stale cached
-		// connection before replacing it to avoid a leak. The non-shared
-		// branch below does the same.
-		if ok {
-			cc.conn.Close()
-		}
-		conn, err := ts.factory.Create(cell, ts.globalServerAddress, ci.Root)
-		if err != nil {
-			return nil, vterrors.Wrap(err, fmt.Sprintf("failed to create topo connection for cell %v", cell))
-		}
-		cellReadSem := semaphore.NewWeighted(DefaultReadConcurrency)
-		conn = NewStatsConn(cell, conn, cellReadSem)
-		ts.cellConns[cell] = cellConn{ci, conn}
-		return conn, nil
 	}
 
 	// Return a cached client if present.
