@@ -22,6 +22,7 @@ import (
 
 	"vitess.io/vitess/go/vt/vtgate/evalengine"
 
+	"vitess.io/vitess/go/mysql/collations"
 	"vitess.io/vitess/go/sqltypes"
 	querypb "vitess.io/vitess/go/vt/proto/query"
 )
@@ -51,7 +52,7 @@ func (sa *ScalarAggregate) GetFields(ctx context.Context, vcursor VCursor, bindV
 	}
 	env := evalengine.NewExpressionEnv(ctx, bindVars, vcursor)
 
-	_, fields, err := newAggregation(qr.Fields, sa.Aggregates, env, vcursor.ConnCollation())
+	_, fields, err := newScalarAggregation(qr.Fields, sa.Aggregates, env, vcursor.ConnCollation())
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +74,7 @@ func (sa *ScalarAggregate) TryExecute(ctx context.Context, vcursor VCursor, bind
 	}
 	env := evalengine.NewExpressionEnv(ctx, bindVars, vcursor)
 
-	agg, fields, err := newAggregation(result.Fields, sa.Aggregates, env, vcursor.ConnCollation())
+	agg, fields, err := newScalarAggregation(result.Fields, sa.Aggregates, env, vcursor.ConnCollation())
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +117,7 @@ func (sa *ScalarAggregate) TryStreamExecute(ctx context.Context, vcursor VCursor
 
 		if agg == nil && len(result.Fields) != 0 {
 			var err error
-			agg, fields, err = newAggregation(result.Fields, sa.Aggregates, env, vcursor.ConnCollation())
+			agg, fields, err = newScalarAggregation(result.Fields, sa.Aggregates, env, vcursor.ConnCollation())
 			if err != nil {
 				return err
 			}
@@ -165,4 +166,22 @@ func (sa *ScalarAggregate) description() PrimitiveDescription {
 		Variant:      "Scalar",
 		Other:        other,
 	}
+}
+
+// newScalarAggregation is newAggregation for an aggregate with no GROUP BY.
+// It always returns one row, so a column it passes through from its input
+// (any_value, or a column that is not aggregated) is NULL when the input is
+// empty. MySQL reports such a column nullable even when the input column is
+// NOT NULL, and so does this.
+func newScalarAggregation(fields []*querypb.Field, aggregates []*AggregateParams, env *evalengine.ExpressionEnv, collation collations.ID) (*aggregationState, []*querypb.Field, error) {
+	agg, fields, err := newAggregation(fields, aggregates, env, collation)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i, a := range agg.aggregators {
+		if _, passThrough := a.(*aggregatorScalar); passThrough {
+			fields[i].Flags &^= uint32(querypb.MySqlFlag_NOT_NULL_FLAG)
+		}
+	}
+	return agg, fields, nil
 }

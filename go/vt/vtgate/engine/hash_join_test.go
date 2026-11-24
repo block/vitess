@@ -237,3 +237,50 @@ func TestHashJoinJSONKeys(t *testing.T) {
 		expectResultAnyOrder(t, r, expected)
 	})
 }
+
+// TestHashLeftJoinFieldsNullableOnEveryPath: each of HashJoin's paths that
+// builds result fields passes the join's opcode, so a LEFT JOIN's right-side
+// columns lose NOT_NULL on every one of them.
+func TestHashLeftJoinFieldsNullableOnEveryPath(t *testing.T) {
+	notNull := uint32(querypb.MySqlFlag_NOT_NULL_FLAG)
+	want := []uint32{notNull, 0, 0}
+	typ := evalengine.NewType(sqltypes.Int64, collations.CollationBinaryID)
+	newJoin := func(right Primitive) *HashJoin {
+		return &HashJoin{
+			Opcode:         LeftJoin,
+			Left:           &fakePrimitive{results: []*sqltypes.Result{notNullResult("l1|l2", "1|1")}},
+			Right:          right,
+			Cols:           []int{-1, 1, 2},
+			Collation:      typ.Collation(),
+			ComparisonType: typ.Type(),
+			CollationEnv:   collations.MySQL8(),
+		}
+	}
+	bv := map[string]*querypb.BindVariable{}
+
+	t.Run("execute", func(t *testing.T) {
+		hj := newJoin(&fakePrimitive{results: []*sqltypes.Result{notNullResult("r1|r2", "1|9")}})
+		r, err := hj.TryExecute(context.Background(), &noopVCursor{}, bv, true)
+		require.NoError(t, err)
+		require.Equal(t, want, notNullFlags(r.Fields))
+	})
+
+	t.Run("stream", func(t *testing.T) {
+		hj := newJoin(&fakePrimitive{results: []*sqltypes.Result{notNullResult("r1|r2", "1|9")}})
+		require.Equal(t, want, notNullFlags(firstStreamedFields(t, hj)))
+	})
+
+	t.Run("stream, right input streams no fields", func(t *testing.T) {
+		rows := notNullResult("r1|r2", "2|9")
+		rows.Fields = nil
+		hj := newJoin(&streamAsIs{fakePrimitive: &fakePrimitive{}, stream: []*sqltypes.Result{rows}, fields: notNullResult("r1|r2")})
+		require.Equal(t, want, notNullFlags(firstStreamedFields(t, hj)))
+	})
+
+	t.Run("GetFields", func(t *testing.T) {
+		hj := newJoin(&fakePrimitive{results: []*sqltypes.Result{notNullResult("r1|r2")}})
+		r, err := hj.GetFields(context.Background(), &noopVCursor{}, bv)
+		require.NoError(t, err)
+		require.Equal(t, want, notNullFlags(r.Fields))
+	})
+}

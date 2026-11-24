@@ -27,6 +27,7 @@ import (
 	"vitess.io/vitess/go/mysql/collations"
 	"vitess.io/vitess/go/sqltypes"
 	"vitess.io/vitess/go/test/utils"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 	"vitess.io/vitess/go/vt/sqlparser"
 	. "vitess.io/vitess/go/vt/vtgate/engine/opcode"
 )
@@ -427,4 +428,57 @@ func TestScalarGroupConcat(t *testing.T) {
 			assert.Equal(t, tcase.expResult, results)
 		})
 	}
+}
+
+// TestScalarAggregatePassThroughColumnNullable: without a GROUP BY, a column
+// the aggregate passes through (not aggregated, or any_value) is NULL over an
+// empty input, so it is nullable even when its input column is NOT NULL, as
+// MySQL reports it. A count stays NOT NULL. Every path that builds fields
+// agrees.
+func TestScalarAggregatePassThroughColumnNullable(t *testing.T) {
+	notNull := uint32(querypb.MySqlFlag_NOT_NULL_FLAG)
+	input := func() *fakePrimitive {
+		f := sqltypes.MakeTestFields("a|b|c", "int64|int64|int64")
+		for _, fl := range f {
+			fl.Flags |= notNull
+		}
+		return &fakePrimitive{results: []*sqltypes.Result{sqltypes.MakeTestResult(f)}}
+	}
+	newAggr := func() *ScalarAggregate {
+		return &ScalarAggregate{
+			Aggregates: []*AggregateParams{
+				NewAggregateParam(AggregateAnyValue, 1, nil, "b", collations.MySQL8()),
+				NewAggregateParam(AggregateCount, 2, nil, "c", collations.MySQL8()),
+			},
+			Input: input(),
+		}
+	}
+	want := []uint32{0, 0, notNull}
+	flags := func(fields []*querypb.Field) []uint32 {
+		out := make([]uint32, len(fields))
+		for i, f := range fields {
+			out[i] = f.Flags & notNull
+		}
+		return out
+	}
+
+	r, err := newAggr().TryExecute(context.Background(), &noopVCursor{}, nil, true)
+	require.NoError(t, err)
+	require.True(t, r.Rows[0][0].IsNull())
+	require.True(t, r.Rows[0][1].IsNull())
+	require.Equal(t, want, flags(r.Fields), "TryExecute")
+
+	r, err = newAggr().GetFields(context.Background(), &noopVCursor{}, nil)
+	require.NoError(t, err)
+	require.Equal(t, want, flags(r.Fields), "GetFields")
+
+	var streamed []*querypb.Field
+	err = newAggr().TryStreamExecute(context.Background(), &noopVCursor{}, nil, true, func(qr *sqltypes.Result) error {
+		if streamed == nil && len(qr.Fields) != 0 {
+			streamed = qr.Fields
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, want, flags(streamed), "TryStreamExecute")
 }

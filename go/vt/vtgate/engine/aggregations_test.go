@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
 
 	"vitess.io/vitess/go/sqltypes"
 	querypb "vitess.io/vitess/go/vt/proto/query"
@@ -176,6 +177,48 @@ func BenchmarkScalarAggregate(b *testing.B) {
 					}
 				}
 			})
+		})
+	}
+}
+
+// TestAggregateFlags pins each aggregate's NOT_NULL flag, as MySQL reports
+// it: a count is never NULL, and so is a sum of the shards' counts; any other
+// aggregate is NULL over an empty input; a grouping column, a constant and a
+// gtid keep their input's flags. Flags other than NOT_NULL pass through.
+func TestAggregateFlags(t *testing.T) {
+	const notNull = uint32(querypb.MySqlFlag_NOT_NULL_FLAG)
+	const unsigned = uint32(querypb.MySqlFlag_UNSIGNED_FLAG)
+	tests := []struct {
+		op, orig AggregateOpcode
+		in, want uint32
+	}{
+		{op: AggregateCountStar, in: 0, want: notNull},
+		{op: AggregateCount, in: 0, want: notNull},
+		{op: AggregateCountDistinct, in: unsigned, want: unsigned | notNull},
+		{op: AggregateSum, orig: AggregateCountStar, in: 0, want: notNull},
+		{op: AggregateSum, orig: AggregateCount, in: 0, want: notNull},
+		{op: AggregateSum, orig: AggregateCountDistinct, in: 0, want: notNull},
+		{op: AggregateSumDistinct, orig: AggregateCountDistinct, in: 0, want: notNull},
+		{op: AggregateSum, in: notNull | unsigned, want: unsigned},
+		{op: AggregateSumDistinct, in: notNull, want: 0},
+		{op: AggregateMin, in: notNull, want: 0},
+		{op: AggregateMax, in: notNull, want: 0},
+		{op: AggregateAvg, in: notNull, want: 0},
+		{op: AggregateGroupConcat, in: notNull, want: 0},
+		{op: AggregateUDF, in: notNull, want: 0},
+		{op: AggregateAnyValue, in: notNull | unsigned, want: notNull | unsigned},
+		{op: AggregateAnyValue, in: unsigned, want: unsigned},
+		{op: AggregateConstant, in: notNull, want: notNull},
+		{op: AggregateGtid, in: notNull, want: notNull},
+	}
+	for _, tc := range tests {
+		name := tc.op.String()
+		if tc.orig != AggregateUnassigned {
+			name += "(" + tc.orig.String() + ")"
+		}
+		t.Run(name, func(t *testing.T) {
+			aggr := &AggregateParams{Opcode: tc.op, OrigOpcode: tc.orig}
+			require.Equal(t, tc.want, aggregateFlags(aggr, tc.in))
 		})
 	}
 }

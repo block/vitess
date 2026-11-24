@@ -488,7 +488,8 @@ func isComparable(typ sqltypes.Type) bool {
 // its argument's: a count is never NULL, and every other aggregate is NULL
 // over an empty input, so it is nullable even when its argument is NOT NULL.
 // MySQL reports them the same way. A grouping column (any_value) and a
-// constant keep their flags.
+// constant keep their flags; without a GROUP BY, newScalarAggregation then
+// clears NOT_NULL on the grouping columns.
 func aggregateFlags(aggr *AggregateParams, flags uint32) uint32 {
 	const notNull = uint32(querypb.MySqlFlag_NOT_NULL_FLAG)
 	switch aggr.Opcode {
