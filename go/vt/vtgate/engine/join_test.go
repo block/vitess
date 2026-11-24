@@ -517,3 +517,33 @@ func TestGetFieldsErrors(t *testing.T) {
 	_, err = jn.GetFields(context.Background(), nil, map[string]*querypb.BindVariable{})
 	require.EqualError(t, err, "right err")
 }
+
+// TestJoinFieldsLeftJoinNullable: a left join's right-side columns are
+// nullable even when their source columns are NOT NULL, since unmatched rows
+// are padded with NULL. The inputs' fields are left as they were.
+func TestJoinFieldsLeftJoinNullable(t *testing.T) {
+	notNull := uint32(querypb.MySqlFlag_NOT_NULL_FLAG)
+	unsigned := uint32(querypb.MySqlFlag_UNSIGNED_FLAG)
+	lfields := []*querypb.Field{{Name: "l", Type: sqltypes.Int64, Flags: notNull}}
+	rfields := []*querypb.Field{{Name: "r", Type: sqltypes.Uint64, Flags: notNull | unsigned}}
+	cols := []int{-1, 1}
+
+	inner := joinFields(lfields, rfields, cols, InnerJoin)
+	require.Equal(t, notNull, inner[0].Flags)
+	require.Equal(t, notNull|unsigned, inner[1].Flags)
+
+	left := joinFields(lfields, rfields, cols, LeftJoin)
+	require.Equal(t, notNull, left[0].Flags, "left-side column keeps NOT NULL")
+	require.Equal(t, unsigned, left[1].Flags, "right-side column loses only NOT NULL")
+	require.Equal(t, notNull|unsigned, rfields[0].Flags, "input field not modified")
+}
+
+// TestBindvarForTypeMediumInt: an empty left input binds a MEDIUMINT join
+// variable as a numeric placeholder, like every other integer type, not NULL.
+func TestBindvarForTypeMediumInt(t *testing.T) {
+	for _, typ := range []querypb.Type{sqltypes.Int24, sqltypes.Uint24} {
+		bv := bindvarForType(&querypb.Field{Type: typ})
+		require.Equal(t, typ, bv.Type, typ.String())
+		require.Equal(t, []byte("0"), bv.Value, typ.String())
+	}
+}

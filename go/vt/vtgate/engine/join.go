@@ -69,7 +69,7 @@ func (jn *Join) TryExecute(ctx context.Context, vcursor VCursor, bindVars map[st
 		if err != nil {
 			return nil, err
 		}
-		result.Fields = joinFields(lresult.Fields, rresult.Fields, jn.Cols)
+		result.Fields = joinFields(lresult.Fields, rresult.Fields, jn.Cols, jn.Opcode)
 		return result, nil
 	}
 	for _, lrow := range lresult.Rows {
@@ -82,7 +82,7 @@ func (jn *Join) TryExecute(ctx context.Context, vcursor VCursor, bindVars map[st
 		}
 		if wantfields {
 			wantfields = false
-			result.Fields = joinFields(lresult.Fields, rresult.Fields, jn.Cols)
+			result.Fields = joinFields(lresult.Fields, rresult.Fields, jn.Cols, jn.Opcode)
 		}
 		for _, rrow := range rresult.Rows {
 			result.Rows = append(result.Rows, joinRows(lrow, rrow, jn.Cols))
@@ -104,7 +104,8 @@ func bindvarForType(field *querypb.Field) *querypb.BindVariable {
 	}
 	switch field.Type {
 	case querypb.Type_INT8, querypb.Type_UINT8, querypb.Type_INT16, querypb.Type_UINT16,
-		querypb.Type_INT32, querypb.Type_UINT32, querypb.Type_INT64, querypb.Type_UINT64:
+		querypb.Type_INT24, querypb.Type_UINT24, querypb.Type_INT32, querypb.Type_UINT32,
+		querypb.Type_INT64, querypb.Type_UINT64:
 		bv.Value = []byte("0")
 	case querypb.Type_FLOAT32, querypb.Type_FLOAT64:
 		bv.Value = []byte("0e0")
@@ -147,7 +148,7 @@ func (jn *Join) TryStreamExecute(ctx context.Context, vcursor VCursor, bindVars 
 				defer mu.Unlock()
 				result := &sqltypes.Result{}
 				if fieldsSent.CompareAndSwap(false, true) {
-					result.Fields = joinFields(lresult.Fields, rresult.Fields, jn.Cols)
+					result.Fields = joinFields(lresult.Fields, rresult.Fields, jn.Cols, jn.Opcode)
 				}
 				for _, rrow := range rresult.Rows {
 					result.Rows = append(result.Rows, joinRows(lrow, rrow, jn.Cols))
@@ -190,7 +191,7 @@ func (jn *Join) TryStreamExecute(ctx context.Context, vcursor VCursor, bindVars 
 			if err != nil {
 				return err
 			}
-			result.Fields = joinFields(lresult.Fields, rresult.Fields, jn.Cols)
+			result.Fields = joinFields(lresult.Fields, rresult.Fields, jn.Cols, jn.Opcode)
 			if err := callback(result); err != nil {
 				return err
 			}
@@ -215,7 +216,7 @@ func (jn *Join) GetFields(ctx context.Context, vcursor VCursor, bindVars map[str
 	if err != nil {
 		return nil, err
 	}
-	result.Fields = joinFields(lresult.Fields, rresult.Fields, jn.Cols)
+	result.Fields = joinFields(lresult.Fields, rresult.Fields, jn.Cols, jn.Opcode)
 	return result, nil
 }
 
@@ -224,7 +225,10 @@ func (jn *Join) Inputs() ([]Primitive, []map[string]any) {
 	return []Primitive{jn.Left, jn.Right}, nil
 }
 
-func joinFields(lfields, rfields []*querypb.Field, cols []int) []*querypb.Field {
+// joinFields builds a join's result fields from its inputs' fields. A left
+// join pads unmatched rows with NULL on the right, so a right-side column is
+// nullable there even when its source column is NOT NULL, as MySQL reports it.
+func joinFields(lfields, rfields []*querypb.Field, cols []int, opcode JoinOpcode) []*querypb.Field {
 	fields := make([]*querypb.Field, len(cols))
 	for i, index := range cols {
 		if index < 0 {
@@ -232,6 +236,9 @@ func joinFields(lfields, rfields []*querypb.Field, cols []int) []*querypb.Field 
 			continue
 		}
 		fields[i] = rfields[index-1].CloneVT()
+		if opcode == LeftJoin {
+			fields[i].Flags &^= uint32(querypb.MySqlFlag_NOT_NULL_FLAG)
+		}
 	}
 	return fields
 }

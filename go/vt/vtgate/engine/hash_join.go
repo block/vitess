@@ -113,7 +113,7 @@ func (hj *HashJoin) TryExecute(ctx context.Context, vcursor VCursor, bindVars ma
 	}
 
 	result := &sqltypes.Result{
-		Fields: joinFields(lresult.Fields, rresult.Fields, hj.Cols),
+		Fields: joinFields(lresult.Fields, rresult.Fields, hj.Cols, hj.Opcode),
 	}
 
 	for _, currentRHSRow := range rresult.Rows {
@@ -164,7 +164,7 @@ func (hj *HashJoin) TryStreamExecute(ctx context.Context, vcursor VCursor, bindV
 		// compare the results coming from the RHS with the probe-table
 		res := &sqltypes.Result{}
 		if len(result.Fields) != 0 && sendFields.CompareAndSwap(true, false) {
-			res.Fields = joinFields(lfields, result.Fields, hj.Cols)
+			res.Fields = joinFields(lfields, result.Fields, hj.Cols, hj.Opcode)
 		}
 		for _, currentRHSRow := range result.Rows {
 			results, err := pt.get(currentRHSRow)
@@ -191,7 +191,7 @@ func (hj *HashJoin) TryStreamExecute(ctx context.Context, vcursor VCursor, bindV
 			if err != nil {
 				return err
 			}
-			res.Fields = joinFields(lfields, rres.Fields, hj.Cols)
+			res.Fields = joinFields(lfields, rres.Fields, hj.Cols, hj.Opcode)
 		}
 		// this will only be called when all the concurrent access to the pt has
 		// ceased, so we don't need to lock it here
@@ -213,7 +213,7 @@ func (hj *HashJoin) GetFields(ctx context.Context, vcursor VCursor, bindVars map
 	if err != nil {
 		return nil, err
 	}
-	result.Fields = joinFields(lresult.Fields, rresult.Fields, hj.Cols)
+	result.Fields = joinFields(lresult.Fields, rresult.Fields, hj.Cols, hj.Opcode)
 	return result, nil
 }
 

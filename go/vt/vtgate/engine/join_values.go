@@ -83,7 +83,7 @@ func (jv *ValuesJoin) TryExecute(ctx context.Context, vcursor VCursor, bindVars 
 
 	result := &sqltypes.Result{}
 
-	result.Fields = joinFields(lresult.Fields, rresult.Fields, jv.Cols)
+	result.Fields = joinFields(lresult.Fields, rresult.Fields, jv.Cols, InnerJoin)
 	for i := range result.Fields {
 		result.Fields[i].Name = jv.ColNames[i]
 	}
