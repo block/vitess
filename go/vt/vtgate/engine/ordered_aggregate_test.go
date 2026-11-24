@@ -99,10 +99,10 @@ func TestOrderedAggregateExecuteTruncate(t *testing.T) {
 	assert.NoError(t, err)
 
 	wantResult := sqltypes.MakeTestResult(
-		sqltypes.MakeTestFields(
+		notNullFields([]int{1}, sqltypes.MakeTestFields(
 			"col|count(*)",
 			"varchar|int64",
-		),
+		)),
 		"a|2",
 		"b|2",
 		"C|7",
@@ -404,10 +404,10 @@ func TestOrderedAggregateExecuteCountDistinct(t *testing.T) {
 	assert.NoError(t, err)
 
 	wantResult := sqltypes.MakeTestResult(
-		sqltypes.MakeTestFields(
+		notNullFields([]int{1, 2}, sqltypes.MakeTestFields(
 			"col1|count(distinct col2)|count(*)",
 			"varbinary|int64|int64",
-		),
+		)),
 		"a|1|3",
 		"b|1|1",
 		"c|2|2",
@@ -480,10 +480,10 @@ func TestOrderedAggregateStreamCountDistinct(t *testing.T) {
 	assert.NoError(t, err)
 
 	wantResults := sqltypes.MakeTestStreamingResults(
-		sqltypes.MakeTestFields(
+		notNullFields([]int{1, 2}, sqltypes.MakeTestFields(
 			"col1|count(distinct col2)|count(*)",
 			"varbinary|int64|int64",
-		),
+		)),
 		"a|1|3",
 		"-----",
 		"b|1|1",
@@ -782,10 +782,10 @@ func TestCountDistinctOnVarchar(t *testing.T) {
 	}
 
 	want := sqltypes.MakeTestResult(
-		sqltypes.MakeTestFields(
+		notNullFields([]int{1}, sqltypes.MakeTestFields(
 			"c1|count(distinct c2)",
 			"int64|int64",
-		),
+		)),
 		`10|2`,
 		`20|1`,
 	)
@@ -842,10 +842,10 @@ func TestCountDistinctOnVarcharWithNulls(t *testing.T) {
 	}
 
 	want := sqltypes.MakeTestResult(
-		sqltypes.MakeTestFields(
+		notNullFields([]int{1}, sqltypes.MakeTestFields(
 			"c1|count(distinct c2)",
 			"int64|int64",
-		),
+		)),
 		`null|2`,
 		`10|2`,
 		`20|1`,
@@ -968,10 +968,10 @@ func TestMultiDistinct(t *testing.T) {
 	}
 
 	want := sqltypes.MakeTestResult(
-		sqltypes.MakeTestFields(
+		notNullFields([]int{1}, sqltypes.MakeTestFields(
 			"c1|count(distinct c2)|sum(distinct c3)",
 			"int64|int64|decimal",
-		),
+		)),
 		`null|2|2`,
 		`10|2|4`,
 		`20|0|null`,
@@ -1289,4 +1289,13 @@ func TestGroupConcat(t *testing.T) {
 			assert.Equal(t, tcase.expResult, results)
 		})
 	}
+}
+
+// notNullFields marks the given columns NOT NULL, as an aggregation reports a
+// count's column.
+func notNullFields(cols []int, fields []*querypb.Field) []*querypb.Field {
+	for _, col := range cols {
+		fields[col].Flags |= uint32(querypb.MySqlFlag_NOT_NULL_FLAG)
+	}
+	return fields
 }

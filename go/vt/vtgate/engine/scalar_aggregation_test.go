@@ -27,6 +27,7 @@ import (
 	"vitess.io/vitess/go/mysql/collations"
 	"vitess.io/vitess/go/sqltypes"
 	"vitess.io/vitess/go/test/utils"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 	"vitess.io/vitess/go/vt/sqlparser"
 	. "vitess.io/vitess/go/vt/vtgate/engine/opcode"
 )
@@ -37,14 +38,20 @@ func TestEmptyRows(outer *testing.T) {
 		origOpcode  AggregateOpcode
 		expectedVal string
 		expectedTyp string
+		// notNull: the result column is NOT NULL. The input column is NOT
+		// NULL in every case, and only a count keeps the flag: every other
+		// aggregate is NULL over this empty input.
+		notNull bool
 	}{{
 		opcode:      AggregateCountDistinct,
 		expectedVal: "0",
 		expectedTyp: "int64",
+		notNull:     true,
 	}, {
 		opcode:      AggregateCount,
 		expectedVal: "0",
 		expectedTyp: "int64",
+		notNull:     true,
 	}, {
 		opcode:      AggregateSumDistinct,
 		expectedVal: "null",
@@ -58,6 +65,7 @@ func TestEmptyRows(outer *testing.T) {
 		expectedVal: "0",
 		expectedTyp: "int64",
 		origOpcode:  AggregateCount,
+		notNull:     true,
 	}, {
 		opcode:      AggregateMax,
 		expectedVal: "null",
@@ -72,10 +80,10 @@ func TestEmptyRows(outer *testing.T) {
 		outer.Run(test.opcode.String(), func(t *testing.T) {
 			fp := &fakePrimitive{
 				results: []*sqltypes.Result{sqltypes.MakeTestResult(
-					sqltypes.MakeTestFields(
+					notNullFields([]int{0}, sqltypes.MakeTestFields(
 						test.opcode.String(),
 						"int64",
-					),
+					)),
 					// Empty input table
 				)},
 			}
@@ -93,13 +101,14 @@ func TestEmptyRows(outer *testing.T) {
 			result, err := oa.TryExecute(context.Background(), &noopVCursor{}, nil, false)
 			assert.NoError(t, err)
 
-			wantResult := sqltypes.MakeTestResult(
-				sqltypes.MakeTestFields(
-					test.opcode.String(),
-					test.expectedTyp,
-				),
-				test.expectedVal,
+			wantFields := sqltypes.MakeTestFields(
+				test.opcode.String(),
+				test.expectedTyp,
 			)
+			if test.notNull {
+				notNullFields([]int{0}, wantFields)
+			}
+			wantResult := sqltypes.MakeTestResult(wantFields, test.expectedVal)
 			utils.MustMatch(t, wantResult, result)
 		})
 	}
@@ -419,4 +428,57 @@ func TestScalarGroupConcat(t *testing.T) {
 			assert.Equal(t, tcase.expResult, results)
 		})
 	}
+}
+
+// TestScalarAggregatePassThroughColumnNullable: without a GROUP BY, a column
+// the aggregate passes through (not aggregated, or any_value) is NULL over an
+// empty input, so it is nullable even when its input column is NOT NULL, as
+// MySQL reports it. A count stays NOT NULL. Every path that builds fields
+// agrees.
+func TestScalarAggregatePassThroughColumnNullable(t *testing.T) {
+	notNull := uint32(querypb.MySqlFlag_NOT_NULL_FLAG)
+	input := func() *fakePrimitive {
+		f := sqltypes.MakeTestFields("a|b|c", "int64|int64|int64")
+		for _, fl := range f {
+			fl.Flags |= notNull
+		}
+		return &fakePrimitive{results: []*sqltypes.Result{sqltypes.MakeTestResult(f)}}
+	}
+	newAggr := func() *ScalarAggregate {
+		return &ScalarAggregate{
+			Aggregates: []*AggregateParams{
+				NewAggregateParam(AggregateAnyValue, 1, nil, "b", collations.MySQL8()),
+				NewAggregateParam(AggregateCount, 2, nil, "c", collations.MySQL8()),
+			},
+			Input: input(),
+		}
+	}
+	want := []uint32{0, 0, notNull}
+	flags := func(fields []*querypb.Field) []uint32 {
+		out := make([]uint32, len(fields))
+		for i, f := range fields {
+			out[i] = f.Flags & notNull
+		}
+		return out
+	}
+
+	r, err := newAggr().TryExecute(context.Background(), &noopVCursor{}, nil, true)
+	require.NoError(t, err)
+	require.True(t, r.Rows[0][0].IsNull())
+	require.True(t, r.Rows[0][1].IsNull())
+	require.Equal(t, want, flags(r.Fields), "TryExecute")
+
+	r, err = newAggr().GetFields(context.Background(), &noopVCursor{}, nil)
+	require.NoError(t, err)
+	require.Equal(t, want, flags(r.Fields), "GetFields")
+
+	var streamed []*querypb.Field
+	err = newAggr().TryStreamExecute(context.Background(), &noopVCursor{}, nil, true, func(qr *sqltypes.Result) error {
+		if streamed == nil && len(qr.Fields) != 0 {
+			streamed = qr.Fields
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, want, flags(streamed), "TryStreamExecute")
 }

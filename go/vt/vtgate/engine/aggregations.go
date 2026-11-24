@@ -484,6 +484,29 @@ func isComparable(typ sqltypes.Type) bool {
 	return false
 }
 
+// aggregateFlags is the column flags of an aggregate's result, derived from
+// its argument's: a count is never NULL, and every other aggregate is NULL
+// over an empty input, so it is nullable even when its argument is NOT NULL.
+// MySQL reports them the same way. A grouping column (any_value) and a
+// constant keep their flags; without a GROUP BY, newScalarAggregation then
+// clears NOT_NULL on the grouping columns.
+func aggregateFlags(aggr *AggregateParams, flags uint32) uint32 {
+	const notNull = uint32(querypb.MySqlFlag_NOT_NULL_FLAG)
+	switch aggr.Opcode {
+	case opcode.AggregateAnyValue, opcode.AggregateConstant, opcode.AggregateGtid:
+		return flags
+	case opcode.AggregateCountStar, opcode.AggregateCount, opcode.AggregateCountDistinct:
+		return flags | notNull
+	case opcode.AggregateSum, opcode.AggregateSumDistinct:
+		// The sum of the shards' counts is itself a count.
+		switch aggr.OrigOpcode {
+		case opcode.AggregateCountStar, opcode.AggregateCount, opcode.AggregateCountDistinct:
+			return flags | notNull
+		}
+	}
+	return flags &^ notNull
+}
+
 func newAggregation(fields []*querypb.Field, aggregates []*AggregateParams, env *evalengine.ExpressionEnv, collation collations.ID) (*aggregationState, []*querypb.Field, error) {
 	fields = slice.Map(fields, func(from *querypb.Field) *querypb.Field { return from.CloneVT() })
 
@@ -596,6 +619,7 @@ func newAggregation(fields []*querypb.Field, aggregates []*AggregateParams, env 
 
 		aggregators[aggr.Col] = ag
 		fields[aggr.Col].Type = targetType
+		fields[aggr.Col].Flags = aggregateFlags(aggr, fields[aggr.Col].Flags)
 		if aggr.Alias != "" {
 			fields[aggr.Col].Name = aggr.Alias
 		}
