@@ -229,9 +229,26 @@ func TestCastBindVars(t *testing.T) {
 		out   string
 	}{
 		{
+			// A precision that is not known casts to the largest MySQL
+			// supports: DECIMAL(0, 0) is DECIMAL(10, 0), which truncates
+			// a wider value.
 			typ:   sqltypes.Decimal,
+			binds: map[string]*querypb.BindVariable{"arg": sqltypes.DecimalBindVariable("12345678901")},
+			out:   "select CAST(12345678901 AS DECIMAL(65, 0)) from ",
+		},
+		{
+			typ:   sqltypes.Decimal,
+			size:  12,
 			binds: map[string]*querypb.BindVariable{"arg": sqltypes.DecimalBindVariable("50")},
-			out:   "select CAST(50 AS DECIMAL(0, 0)) from ",
+			out:   "select CAST(50 AS DECIMAL(12, 0)) from ",
+		},
+		{
+			// MySQL refuses a precision above 65 (1426), which the
+			// sum of two DECIMAL(65, 0) types has.
+			typ:   sqltypes.Decimal,
+			size:  66,
+			binds: map[string]*querypb.BindVariable{"arg": sqltypes.DecimalBindVariable("50")},
+			out:   "select CAST(50 AS DECIMAL(65, 0)) from ",
 		},
 		{
 			typ:   sqltypes.Uint32,

@@ -695,6 +695,18 @@ func NewTypedArgumentFromLiteral(in string, lit *Literal) (*Argument, error) {
 	return arg, nil
 }
 
+// castDecimalPrecision is the precision an Argument of a DECIMAL type with a
+// scale of 0 is cast to when it is formatted: its size, unless MySQL would
+// refuse it (more than 65 digits, which an arithmetic result type can have) or
+// it is not known, in which case the largest MySQL supports, so the cast never
+// truncates the value.
+func (node *Argument) castDecimalPrecision() int32 {
+	if node.Size <= 0 || node.Size > decimal.MyMaxPrecision {
+		return decimal.MyMaxPrecision
+	}
+	return node.Size
+}
+
 // NewListArg builds a new ListArg.
 func NewListArg(in string) ListArg {
 	return ListArg(in)

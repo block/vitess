@@ -2030,7 +2030,7 @@ func (node *Argument) FormatFast(buf *TrackedBuffer) {
 		buf.WriteString("CAST(")
 		buf.WriteArg(":", node.Name)
 		buf.WriteString(" AS DECIMAL(")
-		buf.WriteString(fmt.Sprintf("%d", node.Size))
+		buf.WriteString(fmt.Sprintf("%d", node.castDecimalPrecision()))
 		buf.WriteString(", ")
 		buf.WriteString(fmt.Sprintf("%d", node.Scale))
 		buf.WriteString("))")

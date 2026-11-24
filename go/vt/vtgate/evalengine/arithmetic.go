@@ -495,12 +495,12 @@ func mathMul_dx(v1 *evalDecimal, v2 evalNumeric) *evalDecimal {
 }
 
 func mathMul_dd(v1, v2 *evalDecimal) *evalDecimal {
-	return newEvalDecimalWithPrec(v1.dec.Mul(v2.dec), v1.length+v2.length)
+	return newEvalDecimalWithPrec(v1.dec.Mul(v2.dec), min(v1.length+v2.length, decimal.MyMaxScale))
 }
 
 func mathMul_dd0(v1, v2 *evalDecimal) {
 	v1.dec = v1.dec.Mul(v2.dec)
-	v1.length = v1.length + v2.length
+	v1.length = min(v1.length+v2.length, decimal.MyMaxScale)
 }
 
 const divPrecisionIncrement = 4
@@ -513,12 +513,12 @@ func mathDiv_dd(v1, v2 *evalDecimal, incrPrecision int32) (eval, error) {
 	if v2.dec.IsZero() {
 		return nil, nil
 	}
-	return newEvalDecimalWithPrec(v1.dec.Div(v2.dec, incrPrecision), v1.length+incrPrecision), nil
+	return newEvalDecimalWithPrec(v1.dec.Div(v2.dec, incrPrecision), min(v1.length+incrPrecision, decimal.MyMaxScale)), nil
 }
 
 func mathDiv_dd0(v1, v2 *evalDecimal, incrPrecision int32) {
 	v1.dec = v1.dec.Div(v2.dec, incrPrecision)
-	v1.length = v1.length + incrPrecision
+	v1.length = min(v1.length+incrPrecision, decimal.MyMaxScale)
 }
 
 func mathDiv_fx(v1 float64, v2 evalNumeric) (eval, error) {

@@ -1571,7 +1571,7 @@ func (node *Argument) Format(buf *TrackedBuffer) {
 	case sqltypes.IsDecimal(node.Type) && node.Scale == 0:
 		buf.WriteString("CAST(")
 		buf.WriteArg(":", node.Name)
-		buf.astPrintf(node, " AS DECIMAL(%d, %d))", node.Size, node.Scale)
+		buf.astPrintf(node, " AS DECIMAL(%d, %d))", node.castDecimalPrecision(), node.Scale)
 		return
 	case sqltypes.IsUnsigned(node.Type):
 		buf.WriteString("CAST(")

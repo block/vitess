@@ -224,6 +224,43 @@ func TestCompilerSingle(t *testing.T) {
 			result:     "INT64(2)",
 		},
 		{
+			// MySQL keeps at most 30 decimals in a product and a quotient.
+			expression: "0.00000000000000000000000000001 * 0.5",
+			result:     "DECIMAL(0.000000000000000000000000000005)",
+		},
+		{
+			expression: "1.000000000000000000000000000000 * 1.000000000000000000000000000000 + 0.5",
+			result:     "DECIMAL(1.500000000000000000000000000000)",
+		},
+		{
+			expression: "0.00000000000000000000000000001 * 0.00000000000000000000000000001",
+			result:     "DECIMAL(0.000000000000000000000000000000)",
+		},
+		{
+			// Rounded half away from zero to 30 decimals.
+			expression: "0.000000000000000000000000000015 * 0.1",
+			result:     "DECIMAL(0.000000000000000000000000000002)",
+		},
+		{
+			expression: "0.00000000000000000000000000001 / 3",
+			result:     "DECIMAL(0.000000000000000000000000000003)",
+		},
+		{
+			expression: "column0 * column0",
+			values:     []sqltypes.Value{sqltypes.NewDecimal("0.000000000000000000000000000015")},
+			result:     "DECIMAL(0.000000000000000000000000000000)",
+		},
+		{
+			expression: "column0 * column0 + 0.5",
+			values:     []sqltypes.Value{sqltypes.NewDecimal("0.000000000000000000000000000001")},
+			result:     "DECIMAL(0.500000000000000000000000000000)",
+		},
+		{
+			expression: "column0 / 7",
+			values:     []sqltypes.Value{sqltypes.NewDecimal("0.000000000000000000000000000001")},
+			result:     "DECIMAL(0.000000000000000000000000000000)",
+		},
+		{
 			// A NULL string operand must collapse both LOCATE operands before outer
 			// expressions consume the result.
 			expression: "null <=> locate('foo', column0)",
@@ -1705,4 +1742,241 @@ func TestTypeFromFieldDecimalSize(t *testing.T) {
 			assert.Equal(t, tc.wantLength, typ.ToField("c").ColumnLength)
 		})
 	}
+}
+
+// TestArithmeticDecimalType checks the precision and scale of arithmetic with
+// a DECIMAL result against MySQL 8.0's: each case's want is what MySQL 8.0.44
+// reports for the same expression over columns of the same types (the width
+// is the field's ColumnLength, the precision plus a sign and a point).
+func TestArithmeticDecimalType(t *testing.T) {
+	unsigned := uint32(querypb.MySqlFlag_UNSIGNED_FLAG)
+	fields := []*querypb.Field{
+		{Name: "a", Type: sqltypes.Decimal, ColumnLength: 12, Decimals: 2},     // DECIMAL(10,2)
+		{Name: "b", Type: sqltypes.Decimal, ColumnLength: 12, Decimals: 2},     // DECIMAL(10,2)
+		{Name: "c", Type: sqltypes.Decimal, ColumnLength: 6},                   // DECIMAL(5,0)
+		{Name: "big", Type: sqltypes.Decimal, ColumnLength: 67, Decimals: 30},  // DECIMAL(65,30)
+		{Name: "w", Type: sqltypes.Decimal, ColumnLength: 66},                  // DECIMAL(65,0)
+		{Name: "bi", Type: sqltypes.Int64, ColumnLength: 20},                   // BIGINT
+		{Name: "bu", Type: sqltypes.Uint64, ColumnLength: 20, Flags: unsigned}, // BIGINT UNSIGNED
+		{Name: "i", Type: sqltypes.Int32, ColumnLength: 11},                    // INT
+		{Name: "iu", Type: sqltypes.Uint32, ColumnLength: 10, Flags: unsigned}, // INT UNSIGNED
+		{Name: "ti", Type: sqltypes.Int8, ColumnLength: 4},                     // TINYINT
+		// Integer columns whose display width is narrower than their values.
+		{Name: "i3", Type: sqltypes.Int32, ColumnLength: 3},                    // INT(3)
+		{Name: "tu1", Type: sqltypes.Int8, ColumnLength: 1},                    // TINYINT(1)
+		{Name: "mi", Type: sqltypes.Int24, ColumnLength: 9},                    // MEDIUMINT
+		{Name: "miu", Type: sqltypes.Uint24, ColumnLength: 8, Flags: unsigned}, // MEDIUMINT UNSIGNED
+		{Name: "y", Type: sqltypes.Year, ColumnLength: 4, Flags: unsigned},     // YEAR
+		// An integer of unknown width, as vtgate types an aggregated COUNT(*).
+		{Name: "cnt", Type: sqltypes.Int64},
+		// A DECIMAL of unknown precision.
+		{Name: "unk", Type: sqltypes.Decimal, Decimals: 2},
+	}
+	type decimalCase struct {
+		expression   string
+		size, scale  int32
+		columnLength uint32
+	}
+	testCases := []decimalCase{
+		// An integer of unknown width counts the 20 digits MySQL gives a
+		// BIGINT expression.
+		{"cnt * 1.5", 22, 1, 24},
+		{"cnt + 0.25", 23, 2, 25},
+		{"cnt - 0.25", 23, 2, 25},
+		{"cnt / 4", 24, 4, 26},
+		{"cnt * cnt + 0.5", 22, 1, 24},
+
+		// Addition and subtraction: the wider integer part, the wider scale,
+		// and a digit for the carry.
+		{"a + b", 11, 2, 13},
+		{"a - b", 11, 2, 13},
+		{"a + 1", 11, 2, 13},
+		{"1 + a", 11, 2, 13},
+		{"a - 1", 11, 2, 13},
+		{"a + -1", 11, 2, 13},
+		{"a + c", 11, 2, 13},
+		{"c + c", 6, 0, 7},
+		{"a + true", 11, 2, 13},
+		{"a + bi", 22, 2, 24},
+		{"a + bu", 23, 2, 25},
+		{"a + i", 13, 2, 15},
+		{"a + iu", 13, 2, 15},
+		{"a + ti", 11, 2, 13},
+		// An integer column counts the digits its type holds, whatever its
+		// display width.
+		{"a + i3", 13, 2, 15},
+		{"a + tu1", 11, 2, 13},
+		{"a + mi", 11, 2, 13},
+		{"a + miu", 11, 2, 13},
+		{"a + y", 11, 2, 13},
+		// An integer expression counts the digits of an integer of unknown
+		// width.
+		{"(bu + bu) * 1.5", 23, 1, 25},
+		{"(bu + bu) + 0.25", 24, 2, 26},
+		// A negated unsigned integer keeps its digits and gains a sign.
+		{"a + -bu", 23, 2, 25},
+		{"-bu * 1.5", 22, 1, 24},
+		{"-iu * 1.5", 12, 1, 14},
+		{"-iu / 1", 14, 4, 16},
+		{"bu - a", 23, 2, 25},
+		{"a - bu", 23, 2, 25},
+		{"bu - 0.25", 23, 2, 25},
+		{"bu % a", 20, 2, 22},
+		{"bu % 1.5", 20, 1, 22},
+		{"bi + 0.25", 22, 2, 24},
+		{"bu + 0.25", 23, 2, 25},
+		{"a + 123456789012", 15, 2, 17},
+		{"a + 9223372036854775807", 22, 2, 24},
+		{"a + 18446744073709551615", 23, 2, 25},
+		{"-a + b", 11, 2, 13},
+		// MySQL does not cap an addition's precision.
+		{"big + big", 66, 30, 68},
+		{"big + big + big", 66, 30, 68},
+		{"big - big", 66, 30, 68},
+		{"big + 1", 66, 30, 68},
+		{"w + 1", 66, 0, 67},
+
+		// Multiplication: the sum of the precisions and of the scales.
+		{"a * 2", 11, 2, 13},
+		{"2 * a", 11, 2, 13},
+		{"a * 0", 11, 2, 13},
+		{"a * b", 20, 4, 22},
+		{"a * c", 15, 2, 17},
+		{"a * bi", 29, 2, 31},
+		{"a * bu", 30, 2, 32},
+		{"a * i", 20, 2, 22},
+		{"bi * 1.5", 21, 1, 23},
+		{"bu * 1.5", 22, 1, 24},
+		{"i * 1.5", 12, 1, 14},
+		{"(a + b) * (a + b)", 22, 4, 24},
+		// Capped at DECIMAL(65,30).
+		{"big * big", 65, 30, 67},
+		{"big * 2", 65, 30, 67},
+		{"big * big * big", 65, 30, 67},
+
+		// Division: the dividend's precision plus the divisor's scale and
+		// div_precision_increment (4); the dividend's scale plus 4.
+		{"a / b", 16, 6, 18},
+		{"a / 2", 14, 6, 16},
+		{"2 / a", 7, 4, 9},
+		{"a / 1", 14, 6, 16},
+		{"a / c", 14, 6, 16},
+		{"c / c", 9, 4, 11},
+		{"a / bi", 14, 6, 16},
+		{"a / i", 14, 6, 16},
+		{"bi / a", 25, 4, 27},
+		{"bi / 4", 23, 4, 25},
+		{"bu / 4", 24, 4, 26},
+		{"i / 4", 14, 4, 16},
+		{"iu / 4", 14, 4, 16},
+		{"ti / 4", 7, 4, 9},
+		{"bi / bi", 23, 4, 25},
+		{"i / i", 14, 4, 16},
+		{"(a + b) / (a + b)", 17, 6, 19},
+		{"1 / 4", 5, 4, 7},
+		{"100 / 3", 7, 4, 9},
+		{"-1 / 3", 5, 4, 7},
+		{"1.5 / 0.25", 8, 5, 10},
+		// Capped at DECIMAL(65,30).
+		{"big / big", 65, 30, 67},
+		{"big / a", 65, 30, 67},
+		{"big / 2", 65, 30, 67},
+
+		// Modulo: the larger precision and the larger scale.
+		{"a % b", 10, 2, 12},
+		{"a % 3", 10, 2, 12},
+		{"bi % 1.5", 19, 1, 21},
+		{"big % big", 65, 30, 67},
+		{"big % 1", 65, 30, 67},
+
+		// MySQL has no DECIMAL of unknown precision; vtgate keeps the
+		// precision unknown (0), so nothing is clamped to a guess.
+		{"unk + 1", 0, 2, 0},
+		{"unk * 2", 0, 2, 0},
+		{"unk / 2", 0, 6, 0},
+		{"a / unk", 16, 6, 18},
+		{"unk % 3", 0, 2, 0},
+	}
+	// vtgate folds constants by default, which turns -1 into a negative
+	// literal: it counts the digits of its absolute value.
+	foldedCases := []decimalCase{
+		{"a + -1", 11, 2, 13},
+		{"a * -5", 11, 2, 13},
+		{"a - -1", 11, 2, 13},
+		{"a + -123456789012", 15, 2, 17},
+	}
+
+	venv := vtenv.NewTestEnv()
+	resolveType := func(expr sqlparser.Expr) (evalengine.Type, bool) {
+		col, ok := expr.(*sqlparser.ColName)
+		if !ok {
+			return evalengine.Type{}, false
+		}
+		for _, f := range fields {
+			if f.Name == col.CompliantName() {
+				return evalengine.NewTypeFromField(f), true
+			}
+		}
+		return evalengine.Type{}, false
+	}
+	run := func(t *testing.T, tc decimalCase, fold bool) {
+		t.Run(tc.expression, func(t *testing.T) {
+			expr, err := venv.Parser().ParseExpr(tc.expression)
+			require.NoError(t, err)
+
+			converted, err := evalengine.Translate(expr, &evalengine.Config{
+				ResolveColumn:     evalengine.FieldResolver(fields).Column,
+				ResolveType:       resolveType,
+				Collation:         collations.CollationUtf8mb4ID,
+				Environment:       venv,
+				NoConstantFolding: !fold,
+			})
+			require.NoError(t, err)
+
+			env := evalengine.NewExpressionEnv(context.Background(), nil, evalengine.NewEmptyVCursor(venv, time.UTC))
+			typ, err := env.TypeOf(converted)
+			require.NoError(t, err)
+			assert.Equal(t, sqltypes.Decimal, typ.Type())
+			assert.Equal(t, tc.size, typ.Size(), "precision")
+			assert.Equal(t, tc.scale, typ.Scale(), "scale")
+			assert.Equal(t, tc.columnLength, typ.ToField("r").ColumnLength, "width")
+		})
+	}
+	for _, tc := range testCases {
+		run(t, tc, false)
+	}
+	t.Run("folded", func(t *testing.T) {
+		for _, tc := range foldedCases {
+			run(t, tc, true)
+		}
+	})
+}
+
+// TestArithmeticDecimalArgumentPrecisionFitsCast checks that an arithmetic
+// result of more than 65 digits, which MySQL reports, still formats as a CAST
+// MySQL accepts when the planner turns it into a typed argument.
+func TestArithmeticDecimalArgumentPrecisionFitsCast(t *testing.T) {
+	fields := []*querypb.Field{{Name: "w", Type: sqltypes.Decimal, ColumnLength: 66}} // DECIMAL(65,0)
+	venv := vtenv.NewTestEnv()
+	resolveType := func(expr sqlparser.Expr) (evalengine.Type, bool) {
+		col, ok := expr.(*sqlparser.ColName)
+		return evalengine.NewTypeFromField(fields[0]), ok && col.CompliantName() == "w"
+	}
+	expr, err := venv.Parser().ParseExpr("w + 1")
+	require.NoError(t, err)
+	converted, err := evalengine.Translate(expr, &evalengine.Config{
+		ResolveColumn: evalengine.FieldResolver(fields).Column,
+		ResolveType:   resolveType,
+		Collation:     collations.CollationUtf8mb4ID,
+		Environment:   venv,
+	})
+	require.NoError(t, err)
+	env := evalengine.NewExpressionEnv(context.Background(), nil, evalengine.NewEmptyVCursor(venv, time.UTC))
+	typ, err := env.TypeOf(converted)
+	require.NoError(t, err)
+	require.Equal(t, int32(66), typ.Size())
+
+	arg := sqlparser.NewTypedArgument("bv", typ.Type())
+	arg.Size, arg.Scale = typ.Size(), typ.Scale()
+	assert.Equal(t, "CAST(:bv AS DECIMAL(65, 0))", sqlparser.String(arg))
 }

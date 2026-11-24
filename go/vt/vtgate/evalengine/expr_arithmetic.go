@@ -17,6 +17,9 @@ limitations under the License.
 package evalengine
 
 import (
+	"strconv"
+
+	"vitess.io/vitess/go/mysql/decimal"
 	"vitess.io/vitess/go/sqltypes"
 )
 
@@ -94,6 +97,9 @@ func (op *opArithAdd) compile(c *compiler, left, right IR) (ctype, error) {
 
 	lt = c.compileToNumeric(lt, 2, sqltypes.Float64, true)
 	rt = c.compileToNumeric(rt, 1, sqltypes.Float64, true)
+	// The operands' types before compileNumericPriority swaps them, so each
+	// stays with the expression it was compiled from.
+	lt0, rt0 := lt, rt
 	lt, rt, swap = c.compileNumericPriority(lt, rt)
 
 	ct := ctype{Flag: nullableFlags(lt.Flag | rt.Flag), Col: collationNumeric}
@@ -118,8 +124,7 @@ func (op *opArithAdd) compile(c *compiler, left, right IR) (ctype, error) {
 		}
 		c.asm.Add_dd()
 		ct.Type = sqltypes.Decimal
-		ct.Size = max(lt.Size, rt.Size)
-		ct.Scale = max(lt.Scale, rt.Scale)
+		ct.Size, ct.Scale = additiveDecimalType(decimalOperand(c, left, lt0), decimalOperand(c, right, rt0))
 	case sqltypes.Float64:
 		if swap {
 			c.compileToFloat(rt, 2)
@@ -173,8 +178,7 @@ func (op *opArithSub) compile(c *compiler, left, right IR) (ctype, error) {
 			c.compileToDecimal(lt, 2)
 			c.asm.Sub_dd()
 			ct.Type = sqltypes.Decimal
-			ct.Size = max(lt.Size, rt.Size)
-			ct.Scale = max(lt.Scale, rt.Scale)
+			ct.Size, ct.Scale = additiveDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 		}
 	case sqltypes.Uint64:
 		switch rt.Type {
@@ -192,8 +196,7 @@ func (op *opArithSub) compile(c *compiler, left, right IR) (ctype, error) {
 			c.compileToDecimal(lt, 2)
 			c.asm.Sub_dd()
 			ct.Type = sqltypes.Decimal
-			ct.Size = max(lt.Size, rt.Size)
-			ct.Scale = max(lt.Scale, rt.Scale)
+			ct.Size, ct.Scale = additiveDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 		}
 	case sqltypes.Float64:
 		c.compileToFloat(rt, 1)
@@ -209,8 +212,7 @@ func (op *opArithSub) compile(c *compiler, left, right IR) (ctype, error) {
 			c.compileToDecimal(rt, 1)
 			c.asm.Sub_dd()
 			ct.Type = sqltypes.Decimal
-			ct.Size = max(lt.Size, rt.Size)
-			ct.Scale = max(lt.Scale, rt.Scale)
+			ct.Size, ct.Scale = additiveDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 		}
 	}
 
@@ -244,6 +246,9 @@ func (op *opArithMul) compile(c *compiler, left, right IR) (ctype, error) {
 	skip2 := c.compileNullCheck1r(rt)
 	lt = c.compileToNumeric(lt, 2, sqltypes.Float64, true)
 	rt = c.compileToNumeric(rt, 1, sqltypes.Float64, true)
+	// The operands' types before compileNumericPriority swaps them, so each
+	// stays with the expression it was compiled from.
+	lt0, rt0 := lt, rt
 	lt, rt, swap = c.compileNumericPriority(lt, rt)
 
 	ct := ctype{Flag: nullableFlags(lt.Flag | rt.Flag), Col: collationNumeric}
@@ -275,8 +280,7 @@ func (op *opArithMul) compile(c *compiler, left, right IR) (ctype, error) {
 		}
 		c.asm.Mul_dd()
 		ct.Type = sqltypes.Decimal
-		ct.Size = lt.Size + rt.Size
-		ct.Scale = lt.Scale + rt.Scale
+		ct.Size, ct.Scale = multiplyDecimalType(decimalOperand(c, left, lt0), decimalOperand(c, right, rt0))
 	}
 
 	c.asm.jumpDestination(skip1, skip2)
@@ -316,8 +320,7 @@ func (op *opArithDiv) compile(c *compiler, left, right IR) (ctype, error) {
 		c.compileToDecimal(lt, 2)
 		c.compileToDecimal(rt, 1)
 		c.asm.Div_dd()
-		ct.Size = lt.Size + divPrecisionIncrement
-		ct.Scale = lt.Scale + divPrecisionIncrement
+		ct.Size, ct.Scale = divideDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 	}
 	c.asm.jumpDestination(skip1, skip2)
 	return ct, nil
@@ -446,8 +449,7 @@ func (op *opArithMod) compile(c *compiler, left, right IR) (ctype, error) {
 			c.asm.Mod_ff()
 		case sqltypes.Decimal:
 			ct.Type = sqltypes.Decimal
-			ct.Size = max(lt.Size, rt.Size)
-			ct.Scale = max(lt.Scale, rt.Scale)
+			ct.Size, ct.Scale = moduloDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 			c.asm.Convert_xd(2, 0, 0)
 			c.asm.Mod_dd()
 		}
@@ -464,8 +466,7 @@ func (op *opArithMod) compile(c *compiler, left, right IR) (ctype, error) {
 			c.asm.Mod_ff()
 		case sqltypes.Decimal:
 			ct.Type = sqltypes.Decimal
-			ct.Size = max(lt.Size, rt.Size)
-			ct.Scale = max(lt.Scale, rt.Scale)
+			ct.Size, ct.Scale = moduloDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 			c.asm.Convert_xd(2, 0, 0)
 			c.asm.Mod_dd()
 		}
@@ -477,6 +478,7 @@ func (op *opArithMod) compile(c *compiler, left, right IR) (ctype, error) {
 			c.asm.Convert_xf(2)
 			c.asm.Mod_ff()
 		default:
+			ct.Size, ct.Scale = moduloDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 			c.asm.Convert_xd(1, 0, 0)
 			c.asm.Mod_dd()
 		}
@@ -527,6 +529,11 @@ func (expr *NegateExpr) compile(c *compiler) (ctype, error) {
 		} else {
 			neg = sqltypes.Int64
 			c.asm.Neg_u()
+			if arg.Size > 0 {
+				// A signed result needs a position for the sign that
+				// the unsigned width did not have.
+				arg.Size++
+			}
 		}
 	case sqltypes.Float64:
 		neg = sqltypes.Float64
@@ -546,6 +553,173 @@ func (expr *NegateExpr) compile(c *compiler) (ctype, error) {
 		Scale: arg.Scale,
 		Col:   collationNumeric,
 	}, nil
+}
+
+// decimalType is the precision and scale of an operand or result of DECIMAL
+// arithmetic. An unknown precision is 0, as it is in a ctype's Size, and makes
+// the result's precision unknown too: a result that is narrower than its
+// values would clamp them wherever it is coerced to its type.
+type decimalType struct {
+	precision, scale int32
+}
+
+// Integer digits MySQL counts for an integer of unknown width: an integer
+// expression is a BIGINT 21 characters wide, which is 20 digits signed and
+// 21 unsigned (COUNT(*) * 1.5 is DECIMAL(22,1)).
+const (
+	unknownSignedIntDigits   = 20
+	unknownUnsignedIntDigits = 21
+)
+
+// decimalOperand is the DECIMAL type MySQL gives an operand of arithmetic
+// with a DECIMAL result (Item::decimal_precision): a DECIMAL's precision,
+// capped at the largest MySQL supports, and its scale; or the number of
+// digits an integer has, with a scale of 0.
+func decimalOperand(c *compiler, expr IR, ct ctype) decimalType {
+	switch ct.Type {
+	case sqltypes.Decimal:
+		return decimalType{precision: min(ct.Size, decimal.MyMaxPrecision), scale: ct.Scale}
+	case sqltypes.Int64, sqltypes.Uint64:
+		return decimalType{precision: integerDigits(c, expr, ct)}
+	}
+	return decimalType{scale: ct.Scale}
+}
+
+// integerDigits is the number of digits MySQL counts for an integer operand:
+// a literal's own digits; for a column of known width, the digits its integer
+// type can hold (its display width does not limit its values: an INT(3) holds
+// 2147483647); otherwise the digits its width holds, or as many as an integer
+// of unknown width can have. ct is the operand's type as compiled, which is signed for
+// a negated unsigned column.
+func integerDigits(c *compiler, expr IR, ct ctype) int32 {
+	switch expr := expr.(type) {
+	case *Literal:
+		switch v := expr.inner.(type) {
+		case *evalInt64:
+			u := uint64(v.i)
+			if v.i < 0 {
+				u = -u
+			}
+			return int32(len(strconv.FormatUint(u, 10)))
+		case *evalUint64:
+			return int32(len(strconv.FormatUint(v.u, 10)))
+		}
+	case *NegateExpr:
+		return integerDigits(c, expr.Inner, ct)
+	case *Column:
+		// A column of unknown width, such as an aggregate vtgate computes,
+		// is an integer expression, not a column of its type.
+		if ct.Size > 0 {
+			if digits := integerTypeDigits(columnType(c, expr)); digits > 0 {
+				// A field wider than its type, such as a COUNT(*) a
+				// backend computed, counts its width.
+				return max(digits, widthDigits(ct))
+			}
+		}
+	}
+	switch {
+	case ct.Size > 0:
+		return widthDigits(ct)
+	case ct.Type == sqltypes.Int64:
+		return unknownSignedIntDigits
+	default:
+		return unknownUnsignedIntDigits
+	}
+}
+
+// widthDigits is the number of digits an integer of ct's display width holds:
+// the width, less a position for the sign when ct is signed.
+func widthDigits(ct ctype) int32 {
+	if ct.Type == sqltypes.Int64 {
+		return max(ct.Size-1, 0)
+	}
+	return max(ct.Size, 0)
+}
+
+// columnType is the type a column has before compiling it widens an integer
+// to a 64-bit one, or Unknown when that type is not known yet.
+func columnType(c *compiler, col *Column) sqltypes.Type {
+	switch {
+	case col.typed():
+		return col.Type
+	case c != nil && col.dynamicTypeOffset >= 0 && col.dynamicTypeOffset < len(c.dynamicTypes):
+		return c.dynamicTypes[col.dynamicTypeOffset].Type
+	}
+	return sqltypes.Unknown
+}
+
+// integerTypeDigits is the number of digits MySQL counts for a column of an
+// integer type, whatever its display width: the digits of the type's default
+// width, less one for the sign when it is signed (a MEDIUMINT's default width
+// is 9, so 8 digits, signed or not). It is 0 for any other type.
+func integerTypeDigits(tt sqltypes.Type) int32 {
+	switch tt {
+	case sqltypes.Int8, sqltypes.Uint8:
+		return 3
+	case sqltypes.Int16, sqltypes.Uint16:
+		return 5
+	case sqltypes.Int24, sqltypes.Uint24:
+		return 8
+	case sqltypes.Int32, sqltypes.Uint32:
+		return 10
+	case sqltypes.Int64:
+		return 19
+	case sqltypes.Uint64:
+		return 20
+	case sqltypes.Year:
+		return 4
+	}
+	return 0
+}
+
+func (t decimalType) intDigits() int32 {
+	return t.precision - t.scale
+}
+
+// additiveDecimalType is the type of l + r or l - r, as MySQL's
+// Item_func_additive_op types it: room for the wider integer part and the
+// wider scale, plus a digit for the carry. MySQL does not cap this precision
+// (two DECIMAL(65,30) add up to a DECIMAL(66,30)).
+func additiveDecimalType(l, r decimalType) (size, scale int32) {
+	scale = max(l.scale, r.scale)
+	if l.precision == 0 || r.precision == 0 {
+		return 0, scale
+	}
+	return max(l.intDigits(), r.intDigits()) + scale + 1, scale
+}
+
+// multiplyDecimalType is the type of l * r, as MySQL's Item_func_mul types
+// it: the sum of the precisions and of the scales, capped at the largest
+// MySQL supports.
+func multiplyDecimalType(l, r decimalType) (size, scale int32) {
+	scale = min(l.scale+r.scale, decimal.MyMaxScale)
+	if l.precision == 0 || r.precision == 0 {
+		return 0, scale
+	}
+	return min(l.precision+r.precision, decimal.MyMaxPrecision), scale
+}
+
+// divideDecimalType is the type of l / r, as MySQL's Item_func_div types it:
+// the dividend's precision and scale, each widened by div_precision_increment,
+// with room for the divisor's scale (dividing by 0.01 multiplies by 100).
+// Only the divisor's scale counts, so its precision may be unknown.
+func divideDecimalType(l, r decimalType) (size, scale int32) {
+	scale = min(l.scale+divPrecisionIncrement, decimal.MyMaxScale)
+	if l.precision == 0 {
+		return 0, scale
+	}
+	return min(l.precision+r.scale+divPrecisionIncrement, decimal.MyMaxPrecision), scale
+}
+
+// moduloDecimalType is the type of l % r, as MySQL's Item_func_mod types it:
+// the larger precision and the larger scale, since the remainder is never
+// larger than either operand.
+func moduloDecimalType(l, r decimalType) (size, scale int32) {
+	scale = max(l.scale, r.scale)
+	if l.precision == 0 || r.precision == 0 {
+		return 0, scale
+	}
+	return max(l.precision, r.precision), scale
 }
 
 func nullableFlags(flag typeFlag) typeFlag {

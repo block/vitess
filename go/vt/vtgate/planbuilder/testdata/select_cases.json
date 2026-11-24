@@ -3175,8 +3175,8 @@
               "Name": "user",
               "Sharded": true
             },
-            "FieldQuery": "select CAST(:__sq1 AS DECIMAL(0, 0)) as `(select sum(col) from ``user``)` from user_extra where 1 != 1",
-            "Query": "select CAST(:__sq1 AS DECIMAL(0, 0)) as `(select sum(col) from ``user``)` from user_extra"
+            "FieldQuery": "select CAST(:__sq1 AS DECIMAL(65, 0)) as `(select sum(col) from ``user``)` from user_extra where 1 != 1",
+            "Query": "select CAST(:__sq1 AS DECIMAL(65, 0)) as `(select sum(col) from ``user``)` from user_extra"
           }
         ]
       },
