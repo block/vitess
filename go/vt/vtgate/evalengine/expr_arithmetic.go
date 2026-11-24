@@ -124,7 +124,7 @@ func (op *opArithAdd) compile(c *compiler, left, right IR) (ctype, error) {
 		}
 		c.asm.Add_dd()
 		ct.Type = sqltypes.Decimal
-		ct.Size, ct.Scale = additiveDecimalType(decimalOperand(left, lt0), decimalOperand(right, rt0))
+		ct.Size, ct.Scale = additiveDecimalType(decimalOperand(c, left, lt0), decimalOperand(c, right, rt0))
 	case sqltypes.Float64:
 		if swap {
 			c.compileToFloat(rt, 2)
@@ -178,7 +178,7 @@ func (op *opArithSub) compile(c *compiler, left, right IR) (ctype, error) {
 			c.compileToDecimal(lt, 2)
 			c.asm.Sub_dd()
 			ct.Type = sqltypes.Decimal
-			ct.Size, ct.Scale = additiveDecimalType(decimalOperand(left, lt), decimalOperand(right, rt))
+			ct.Size, ct.Scale = additiveDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 		}
 	case sqltypes.Uint64:
 		switch rt.Type {
@@ -196,7 +196,7 @@ func (op *opArithSub) compile(c *compiler, left, right IR) (ctype, error) {
 			c.compileToDecimal(lt, 2)
 			c.asm.Sub_dd()
 			ct.Type = sqltypes.Decimal
-			ct.Size, ct.Scale = additiveDecimalType(decimalOperand(left, lt), decimalOperand(right, rt))
+			ct.Size, ct.Scale = additiveDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 		}
 	case sqltypes.Float64:
 		c.compileToFloat(rt, 1)
@@ -212,7 +212,7 @@ func (op *opArithSub) compile(c *compiler, left, right IR) (ctype, error) {
 			c.compileToDecimal(rt, 1)
 			c.asm.Sub_dd()
 			ct.Type = sqltypes.Decimal
-			ct.Size, ct.Scale = additiveDecimalType(decimalOperand(left, lt), decimalOperand(right, rt))
+			ct.Size, ct.Scale = additiveDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 		}
 	}
 
@@ -280,7 +280,7 @@ func (op *opArithMul) compile(c *compiler, left, right IR) (ctype, error) {
 		}
 		c.asm.Mul_dd()
 		ct.Type = sqltypes.Decimal
-		ct.Size, ct.Scale = multiplyDecimalType(decimalOperand(left, lt0), decimalOperand(right, rt0))
+		ct.Size, ct.Scale = multiplyDecimalType(decimalOperand(c, left, lt0), decimalOperand(c, right, rt0))
 	}
 
 	c.asm.jumpDestination(skip1, skip2)
@@ -320,7 +320,7 @@ func (op *opArithDiv) compile(c *compiler, left, right IR) (ctype, error) {
 		c.compileToDecimal(lt, 2)
 		c.compileToDecimal(rt, 1)
 		c.asm.Div_dd()
-		ct.Size, ct.Scale = divideDecimalType(decimalOperand(left, lt), decimalOperand(right, rt))
+		ct.Size, ct.Scale = divideDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 	}
 	c.asm.jumpDestination(skip1, skip2)
 	return ct, nil
@@ -449,7 +449,7 @@ func (op *opArithMod) compile(c *compiler, left, right IR) (ctype, error) {
 			c.asm.Mod_ff()
 		case sqltypes.Decimal:
 			ct.Type = sqltypes.Decimal
-			ct.Size, ct.Scale = moduloDecimalType(decimalOperand(left, lt), decimalOperand(right, rt))
+			ct.Size, ct.Scale = moduloDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 			c.asm.Convert_xd(2, 0, 0)
 			c.asm.Mod_dd()
 		}
@@ -466,7 +466,7 @@ func (op *opArithMod) compile(c *compiler, left, right IR) (ctype, error) {
 			c.asm.Mod_ff()
 		case sqltypes.Decimal:
 			ct.Type = sqltypes.Decimal
-			ct.Size, ct.Scale = moduloDecimalType(decimalOperand(left, lt), decimalOperand(right, rt))
+			ct.Size, ct.Scale = moduloDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 			c.asm.Convert_xd(2, 0, 0)
 			c.asm.Mod_dd()
 		}
@@ -478,7 +478,7 @@ func (op *opArithMod) compile(c *compiler, left, right IR) (ctype, error) {
 			c.asm.Convert_xf(2)
 			c.asm.Mod_ff()
 		default:
-			ct.Size, ct.Scale = moduloDecimalType(decimalOperand(left, lt), decimalOperand(right, rt))
+			ct.Size, ct.Scale = moduloDecimalType(decimalOperand(c, left, lt), decimalOperand(c, right, rt))
 			c.asm.Convert_xd(1, 0, 0)
 			c.asm.Mod_dd()
 		}
@@ -529,6 +529,11 @@ func (expr *NegateExpr) compile(c *compiler) (ctype, error) {
 		} else {
 			neg = sqltypes.Int64
 			c.asm.Neg_u()
+			if arg.Size > 0 {
+				// A signed result needs a position for the sign that
+				// the unsigned width did not have.
+				arg.Size++
+			}
 		}
 	case sqltypes.Float64:
 		neg = sqltypes.Float64
@@ -570,21 +575,23 @@ const (
 // with a DECIMAL result (Item::decimal_precision): a DECIMAL's precision,
 // capped at the largest MySQL supports, and its scale; or the number of
 // digits an integer has, with a scale of 0.
-func decimalOperand(expr IR, ct ctype) decimalType {
+func decimalOperand(c *compiler, expr IR, ct ctype) decimalType {
 	switch ct.Type {
 	case sqltypes.Decimal:
 		return decimalType{precision: min(ct.Size, decimal.MyMaxPrecision), scale: ct.Scale}
 	case sqltypes.Int64, sqltypes.Uint64:
-		return decimalType{precision: integerDigits(expr, ct)}
+		return decimalType{precision: integerDigits(c, expr, ct)}
 	}
 	return decimalType{scale: ct.Scale}
 }
 
 // integerDigits is the number of digits MySQL counts for an integer operand:
-// a literal's own digits, the digits a column of the integer's display width
-// holds (the width less a sign, when the column is signed), or as many as an
-// integer of unknown width can have.
-func integerDigits(expr IR, ct ctype) int32 {
+// a literal's own digits; for a column of known width, the digits its integer
+// type can hold (its display width does not limit its values: an INT(3) holds
+// 2147483647); otherwise the digits its width holds, or as many as an integer
+// of unknown width can have. ct is the operand's type as compiled, which is signed for
+// a negated unsigned column.
+func integerDigits(c *compiler, expr IR, ct ctype) int32 {
 	switch expr := expr.(type) {
 	case *Literal:
 		switch v := expr.inner.(type) {
@@ -598,19 +605,71 @@ func integerDigits(expr IR, ct ctype) int32 {
 			return int32(len(strconv.FormatUint(v.u, 10)))
 		}
 	case *NegateExpr:
-		return integerDigits(expr.Inner, ct)
+		return integerDigits(c, expr.Inner, ct)
+	case *Column:
+		// A column of unknown width, such as an aggregate vtgate computes,
+		// is an integer expression, not a column of its type.
+		if ct.Size > 0 {
+			if digits := integerTypeDigits(columnType(c, expr)); digits > 0 {
+				// A field wider than its type, such as a COUNT(*) a
+				// backend computed, counts its width.
+				return max(digits, widthDigits(ct))
+			}
+		}
 	}
-	signed := ct.Type == sqltypes.Int64
 	switch {
-	case ct.Size <= 0 && signed:
+	case ct.Size > 0:
+		return widthDigits(ct)
+	case ct.Type == sqltypes.Int64:
 		return unknownSignedIntDigits
-	case ct.Size <= 0:
-		return unknownUnsignedIntDigits
-	case signed:
-		return max(ct.Size-1, 0)
 	default:
-		return ct.Size
+		return unknownUnsignedIntDigits
 	}
+}
+
+// widthDigits is the number of digits an integer of ct's display width holds:
+// the width, less a position for the sign when ct is signed.
+func widthDigits(ct ctype) int32 {
+	if ct.Type == sqltypes.Int64 {
+		return max(ct.Size-1, 0)
+	}
+	return max(ct.Size, 0)
+}
+
+// columnType is the type a column has before compiling it widens an integer
+// to a 64-bit one, or Unknown when that type is not known yet.
+func columnType(c *compiler, col *Column) sqltypes.Type {
+	switch {
+	case col.typed():
+		return col.Type
+	case c != nil && col.dynamicTypeOffset >= 0 && col.dynamicTypeOffset < len(c.dynamicTypes):
+		return c.dynamicTypes[col.dynamicTypeOffset].Type
+	}
+	return sqltypes.Unknown
+}
+
+// integerTypeDigits is the number of digits MySQL counts for a column of an
+// integer type, whatever its display width: the digits of the type's default
+// width, less one for the sign when it is signed (a MEDIUMINT's default width
+// is 9, so 8 digits, signed or not). It is 0 for any other type.
+func integerTypeDigits(tt sqltypes.Type) int32 {
+	switch tt {
+	case sqltypes.Int8, sqltypes.Uint8:
+		return 3
+	case sqltypes.Int16, sqltypes.Uint16:
+		return 5
+	case sqltypes.Int24, sqltypes.Uint24:
+		return 8
+	case sqltypes.Int32, sqltypes.Uint32:
+		return 10
+	case sqltypes.Int64:
+		return 19
+	case sqltypes.Uint64:
+		return 20
+	case sqltypes.Year:
+		return 4
+	}
+	return 0
 }
 
 func (t decimalType) intDigits() int32 {
