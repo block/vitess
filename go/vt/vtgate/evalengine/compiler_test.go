@@ -1706,3 +1706,165 @@ func TestTypeFromFieldDecimalSize(t *testing.T) {
 		})
 	}
 }
+
+// TestArithmeticDecimalType checks the precision and scale of arithmetic with
+// a DECIMAL result against MySQL 8.0's: each case's want is what MySQL 8.0.44
+// reports for the same expression over columns of the same types (the width
+// is the field's ColumnLength, the precision plus a sign and a point).
+func TestArithmeticDecimalType(t *testing.T) {
+	unsigned := uint32(querypb.MySqlFlag_UNSIGNED_FLAG)
+	fields := []*querypb.Field{
+		{Name: "a", Type: sqltypes.Decimal, ColumnLength: 12, Decimals: 2},     // DECIMAL(10,2)
+		{Name: "b", Type: sqltypes.Decimal, ColumnLength: 12, Decimals: 2},     // DECIMAL(10,2)
+		{Name: "c", Type: sqltypes.Decimal, ColumnLength: 6},                   // DECIMAL(5,0)
+		{Name: "big", Type: sqltypes.Decimal, ColumnLength: 67, Decimals: 30},  // DECIMAL(65,30)
+		{Name: "bi", Type: sqltypes.Int64, ColumnLength: 20},                   // BIGINT
+		{Name: "bu", Type: sqltypes.Uint64, ColumnLength: 20, Flags: unsigned}, // BIGINT UNSIGNED
+		{Name: "i", Type: sqltypes.Int32, ColumnLength: 11},                    // INT
+		{Name: "iu", Type: sqltypes.Uint32, ColumnLength: 10, Flags: unsigned}, // INT UNSIGNED
+		{Name: "ti", Type: sqltypes.Int8, ColumnLength: 4},                     // TINYINT
+		// An integer of unknown width, as vtgate types an aggregated COUNT(*).
+		{Name: "cnt", Type: sqltypes.Int64},
+		// A DECIMAL of unknown precision.
+		{Name: "unk", Type: sqltypes.Decimal, Decimals: 2},
+	}
+	testCases := []struct {
+		expression   string
+		size, scale  int32
+		columnLength uint32
+	}{
+		// An integer of unknown width counts the 20 digits MySQL gives a
+		// BIGINT expression.
+		{"cnt * 1.5", 22, 1, 24},
+		{"cnt + 0.25", 23, 2, 25},
+		{"cnt - 0.25", 23, 2, 25},
+		{"cnt / 4", 24, 4, 26},
+		{"cnt * cnt + 0.5", 22, 1, 24},
+
+		// Addition and subtraction: the wider integer part, the wider scale,
+		// and a digit for the carry.
+		{"a + b", 11, 2, 13},
+		{"a - b", 11, 2, 13},
+		{"a + 1", 11, 2, 13},
+		{"1 + a", 11, 2, 13},
+		{"a - 1", 11, 2, 13},
+		{"a + -1", 11, 2, 13},
+		{"a + c", 11, 2, 13},
+		{"c + c", 6, 0, 7},
+		{"a + true", 11, 2, 13},
+		{"a + bi", 22, 2, 24},
+		{"a + bu", 23, 2, 25},
+		{"a + i", 13, 2, 15},
+		{"a + iu", 13, 2, 15},
+		{"a + ti", 11, 2, 13},
+		{"bi + 0.25", 22, 2, 24},
+		{"bu + 0.25", 23, 2, 25},
+		{"a + 123456789012", 15, 2, 17},
+		{"a + 9223372036854775807", 22, 2, 24},
+		{"a + 18446744073709551615", 23, 2, 25},
+		{"-a + b", 11, 2, 13},
+		// MySQL does not cap an addition's precision.
+		{"big + big", 66, 30, 68},
+		{"big + big + big", 66, 30, 68},
+		{"big - big", 66, 30, 68},
+		{"big + 1", 66, 30, 68},
+
+		// Multiplication: the sum of the precisions and of the scales.
+		{"a * 2", 11, 2, 13},
+		{"2 * a", 11, 2, 13},
+		{"a * 0", 11, 2, 13},
+		{"a * b", 20, 4, 22},
+		{"a * c", 15, 2, 17},
+		{"a * bi", 29, 2, 31},
+		{"a * bu", 30, 2, 32},
+		{"a * i", 20, 2, 22},
+		{"bi * 1.5", 21, 1, 23},
+		{"bu * 1.5", 22, 1, 24},
+		{"i * 1.5", 12, 1, 14},
+		{"(a + b) * (a + b)", 22, 4, 24},
+		// Capped at DECIMAL(65,30).
+		{"big * big", 65, 30, 67},
+		{"big * 2", 65, 30, 67},
+		{"big * big * big", 65, 30, 67},
+
+		// Division: the dividend's precision plus the divisor's scale and
+		// div_precision_increment (4); the dividend's scale plus 4.
+		{"a / b", 16, 6, 18},
+		{"a / 2", 14, 6, 16},
+		{"2 / a", 7, 4, 9},
+		{"a / 1", 14, 6, 16},
+		{"a / c", 14, 6, 16},
+		{"c / c", 9, 4, 11},
+		{"a / bi", 14, 6, 16},
+		{"a / i", 14, 6, 16},
+		{"bi / a", 25, 4, 27},
+		{"bi / 4", 23, 4, 25},
+		{"bu / 4", 24, 4, 26},
+		{"i / 4", 14, 4, 16},
+		{"iu / 4", 14, 4, 16},
+		{"ti / 4", 7, 4, 9},
+		{"bi / bi", 23, 4, 25},
+		{"i / i", 14, 4, 16},
+		{"(a + b) / (a + b)", 17, 6, 19},
+		{"1 / 4", 5, 4, 7},
+		{"100 / 3", 7, 4, 9},
+		{"-1 / 3", 5, 4, 7},
+		{"1.5 / 0.25", 8, 5, 10},
+		// Capped at DECIMAL(65,30).
+		{"big / big", 65, 30, 67},
+		{"big / a", 65, 30, 67},
+		{"big / 2", 65, 30, 67},
+
+		// Modulo: the larger precision and the larger scale.
+		{"a % b", 10, 2, 12},
+		{"a % 3", 10, 2, 12},
+		{"bi % 1.5", 19, 1, 21},
+		{"big % big", 65, 30, 67},
+		{"big % 1", 65, 30, 67},
+
+		// MySQL has no DECIMAL of unknown precision; vtgate keeps the
+		// precision unknown (0), so nothing is clamped to a guess.
+		{"unk + 1", 0, 2, 0},
+		{"unk * 2", 0, 2, 0},
+		{"unk / 2", 0, 6, 0},
+		{"a / unk", 16, 6, 18},
+		{"unk % 3", 0, 2, 0},
+	}
+
+	venv := vtenv.NewTestEnv()
+	resolveType := func(expr sqlparser.Expr) (evalengine.Type, bool) {
+		col, ok := expr.(*sqlparser.ColName)
+		if !ok {
+			return evalengine.Type{}, false
+		}
+		for _, f := range fields {
+			if f.Name == col.CompliantName() {
+				return evalengine.NewTypeFromField(f), true
+			}
+		}
+		return evalengine.Type{}, false
+	}
+	for _, tc := range testCases {
+		t.Run(tc.expression, func(t *testing.T) {
+			expr, err := venv.Parser().ParseExpr(tc.expression)
+			require.NoError(t, err)
+
+			converted, err := evalengine.Translate(expr, &evalengine.Config{
+				ResolveColumn:     evalengine.FieldResolver(fields).Column,
+				ResolveType:       resolveType,
+				Collation:         collations.CollationUtf8mb4ID,
+				Environment:       venv,
+				NoConstantFolding: true,
+			})
+			require.NoError(t, err)
+
+			env := evalengine.NewExpressionEnv(context.Background(), nil, evalengine.NewEmptyVCursor(venv, time.UTC))
+			typ, err := env.TypeOf(converted)
+			require.NoError(t, err)
+			assert.Equal(t, sqltypes.Decimal, typ.Type())
+			assert.Equal(t, tc.size, typ.Size(), "precision")
+			assert.Equal(t, tc.scale, typ.Scale(), "scale")
+			assert.Equal(t, tc.columnLength, typ.ToField("r").ColumnLength, "width")
+		})
+	}
+}
