@@ -152,7 +152,7 @@ func (p *Projection) evalFields(env *evalengine.ExpressionEnv, infields []*query
 			Name:         col,
 			Type:         typ.Type(),
 			Charset:      uint32(typCol),
-			ColumnLength: uint32(typ.Size()),
+			ColumnLength: typ.ColumnLength(),
 			Decimals:     uint32(typ.Scale()),
 			Flags:        fl,
 		})

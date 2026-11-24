@@ -814,7 +814,7 @@ func TestCompilerSingle(t *testing.T) {
                else 0
     end) * 0.01`,
 			result:     `DECIMAL(0.0001)`,
-			typeWanted: evalengine.NewTypeEx(sqltypes.Decimal, collations.CollationBinaryID, false, 4, 4, nil),
+			typeWanted: evalengine.NewTypeEx(sqltypes.Decimal, collations.CollationBinaryID, false, 6, 4, nil),
 		},
 		{
 			expression: `case when true then 0.02 else 1.000 end`,
@@ -1663,6 +1663,35 @@ func TestJSONColumnDecimals(t *testing.T) {
 			res, err := env.EvaluateVM(compiled)
 			require.NoError(t, err)
 			assert.Equal(t, tc.result, res.String())
+		})
+	}
+}
+
+// TestTypeFromFieldDecimalSize checks that a DECIMAL field's width converts to
+// a Type's precision and back: NewTypeFromField, then ToField.
+func TestTypeFromFieldDecimalSize(t *testing.T) {
+	unsigned := uint32(querypb.MySqlFlag_UNSIGNED_FLAG)
+	testCases := []struct {
+		name       string
+		field      *querypb.Field
+		wantSize   int32
+		wantLength uint32
+	}{
+		{"signed DECIMAL(12,4)", &querypb.Field{Type: sqltypes.Decimal, ColumnLength: 14, Decimals: 4}, 12, 14},
+		{"signed DECIMAL(32,0)", &querypb.Field{Type: sqltypes.Decimal, ColumnLength: 33}, 32, 33},
+		{"signed DECIMAL(1,0)", &querypb.Field{Type: sqltypes.Decimal, ColumnLength: 2}, 1, 2},
+		// ToField sets no UNSIGNED flag, so the width it reports counts a sign
+		// byte, and the precision a client derives from it is unchanged.
+		{"unsigned DECIMAL(12,4)", &querypb.Field{Type: sqltypes.Decimal, ColumnLength: 13, Decimals: 4, Flags: unsigned}, 12, 14},
+		{"unsigned DECIMAL(1,0)", &querypb.Field{Type: sqltypes.Decimal, ColumnLength: 1, Flags: unsigned}, 1, 2},
+		{"DECIMAL of unknown width", &querypb.Field{Type: sqltypes.Decimal, Decimals: 4}, 0, 0},
+		{"VARCHAR", &querypb.Field{Type: sqltypes.VarChar, ColumnLength: 64}, 64, 64},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			typ := evalengine.NewTypeFromField(tc.field)
+			assert.Equal(t, tc.wantSize, typ.Size())
+			assert.Equal(t, tc.wantLength, typ.ToField("c").ColumnLength)
 		})
 	}
 }

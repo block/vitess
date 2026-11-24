@@ -75,7 +75,11 @@ func (l *Literal) typeof(*ExpressionEnv) (ctype, error) {
 	case *evalTemporal:
 		return ctype{Type: e.t, Col: collationNumeric, Size: int32(e.prec)}, nil
 	case *evalDecimal:
-		return ctype{Type: sqltypes.Decimal, Col: collationNumeric, Size: e.length, Scale: -e.dec.Exponent()}, nil
+		// e.length is the scale the value is formatted to, not its
+		// precision: a DECIMAL's size is its precision, the integer digits
+		// plus the scale, as MySQL types 1.5 as DECIMAL(2,1).
+		intDigits := int32(len(e.dec.Abs().Truncate(0).String()))
+		return ctype{Type: sqltypes.Decimal, Col: collationNumeric, Size: intDigits + e.length, Scale: e.length}, nil
 	}
 	return ctype{Type: l.inner.SQLType(), Flag: f, Col: evalCollation(l.inner)}, nil
 }

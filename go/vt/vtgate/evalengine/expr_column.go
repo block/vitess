@@ -80,7 +80,7 @@ func (c *Column) typeof(env *ExpressionEnv) (ctype, error) {
 			Type:  field.Type,
 			Col:   typedCoercionCollation(field.Type, collations.ID(field.Charset)),
 			Flag:  f,
-			Size:  int32(field.ColumnLength),
+			Size:  sizeFromField(field),
 			Scale: int32(field.Decimals),
 		}, nil
 	}
