@@ -817,6 +817,17 @@ func TestCompilerSingle(t *testing.T) {
 			typeWanted: evalengine.NewTypeEx(sqltypes.Decimal, collations.CollationBinaryID, false, 6, 4, nil),
 		},
 		{
+			// A DECIMAL argument's fraction is its scale (1), not its precision (15).
+			expression: "UNIX_TIMESTAMP(20000101103458.1)",
+			result:     "DECIMAL(946719298.1)",
+			typeWanted: evalengine.NewTypeEx(sqltypes.Decimal, collations.CollationBinaryID, false, 16, 1, nil),
+		},
+		{
+			expression: "FROM_UNIXTIME(1.5)",
+			result:     `DATETIME("1970-01-01 01:00:01.5")`,
+			typeWanted: evalengine.NewTypeEx(sqltypes.Datetime, collations.CollationBinaryID, true, 1, 0, nil),
+		},
+		{
 			expression: `case when true then 0.02 else 1.000 end`,
 			result:     `DECIMAL(0.02)`,
 		},
