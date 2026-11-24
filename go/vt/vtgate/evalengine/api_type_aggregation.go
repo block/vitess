@@ -18,6 +18,7 @@ package evalengine
 
 import (
 	"vitess.io/vitess/go/mysql/collations"
+	"vitess.io/vitess/go/mysql/decimal"
 	"vitess.io/vitess/go/sqltypes"
 	"vitess.io/vitess/go/vt/proto/query"
 )
@@ -56,6 +57,12 @@ type TypeAggregator struct {
 	collations  collationAggregation
 	size, scale int32
 	invalid     int32
+
+	// intDigits is the widest integer part among the DECIMAL and integer
+	// inputs, which a DECIMAL result needs room for next to the widest
+	// scale. intDigitsUnknown is set once such an input has no size.
+	intDigits        int32
+	intDigitsUnknown bool
 }
 
 func (ta *TypeAggregator) Add(typ Type, env *collations.Environment) error {
@@ -70,7 +77,33 @@ func (ta *TypeAggregator) Add(typ Type, env *collations.Environment) error {
 	}
 	ta.size = max(typ.size, ta.size)
 	ta.scale = max(typ.scale, ta.scale)
+	switch {
+	case sqltypes.IsDecimal(typ.typ):
+		ta.addIntDigits(typ.size-typ.scale, typ.size == 0)
+	case sqltypes.IsIntegral(typ.typ):
+		// An integer's size is its display width, which counts a sign
+		// where there is one: never fewer digits than its values have.
+		ta.addIntDigits(typ.size, typ.size == 0)
+	}
 	return nil
+}
+
+func (ta *TypeAggregator) addIntDigits(digits int32, unknown bool) {
+	ta.intDigits = max(ta.intDigits, digits)
+	ta.intDigitsUnknown = ta.intDigitsUnknown || unknown
+}
+
+// decimalSize is the precision of a DECIMAL result: room for the widest
+// integer part and the widest scale among the inputs, as MySQL aggregates
+// them. The larger of the inputs' precisions is not enough: DECIMAL(3,2)
+// and an integer of two digits need DECIMAL(4,2), or a value of 99 would
+// be clamped to 9.99 when coerced to the result. When an input's size is
+// unknown, so is the result's (0), and nothing is clamped.
+func (ta *TypeAggregator) decimalSize() int32 {
+	if ta.intDigitsUnknown {
+		return 0
+	}
+	return min(ta.intDigits+ta.scale, decimal.MyMaxPrecision)
 }
 
 func (ta *TypeAggregator) AddField(f *query.Field, env *collations.Environment) error {
@@ -81,7 +114,12 @@ func (ta *TypeAggregator) Type() Type {
 	if ta.invalid > 0 || ta.types.empty() {
 		return Type{}
 	}
-	return NewTypeEx(ta.types.result(), ta.collations.result().Collation, ta.types.nullable, ta.size, ta.scale, nil)
+	result := ta.types.result()
+	size := ta.size
+	if sqltypes.IsDecimal(result) {
+		size = ta.decimalSize()
+	}
+	return NewTypeEx(result, ta.collations.result().Collation, ta.types.nullable, size, ta.scale, nil)
 }
 
 func (ta *TypeAggregator) Field(name string) *query.Field {

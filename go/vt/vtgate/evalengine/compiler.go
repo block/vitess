@@ -108,9 +108,44 @@ func NewTypeFromField(f *querypb.Field) Type {
 		collation: collations.ID(f.Charset),
 		nullable:  f.Flags&uint32(querypb.MySqlFlag_NOT_NULL_FLAG) == 0,
 		init:      true,
-		size:      int32(f.ColumnLength),
+		size:      sizeFromField(f),
 		scale:     int32(f.Decimals),
 	}
+}
+
+// sizeFromField is the size of a Type read from a field. A DECIMAL's size is
+// its precision, as CAST, literals, arithmetic and schema tracking give it, but
+// a field's ColumnLength is the DECIMAL's width in the column definition MySQL
+// sends: the precision, plus a byte for the sign unless the column is UNSIGNED,
+// plus a byte for the point when there is a scale. Every other type's size is
+// its ColumnLength.
+func sizeFromField(f *querypb.Field) int32 {
+	if f.Type != sqltypes.Decimal || f.ColumnLength == 0 {
+		return int32(f.ColumnLength)
+	}
+	width := int32(f.ColumnLength)
+	if f.Decimals > 0 {
+		width-- // the point
+	}
+	if f.Flags&uint32(querypb.MySqlFlag_UNSIGNED_FLAG) == 0 {
+		width-- // the sign
+	}
+	return max(width, int32(f.Decimals), 1)
+}
+
+// columnLength is the ColumnLength of a field of type typ with this size and
+// scale: the size, except that a DECIMAL of known precision is widened to the
+// width MySQL sends for it (see sizeFromField). The width counts a sign byte,
+// because a DECIMAL field built from a Type carries no UNSIGNED flag.
+func columnLength(typ sqltypes.Type, size, scale int32) uint32 {
+	if typ != sqltypes.Decimal || size <= 0 {
+		return uint32(max(size, 0))
+	}
+	width := size + 1 // the sign
+	if scale > 0 {
+		width++ // the point
+	}
+	return uint32(width)
 }
 
 func (t *Type) ToField(name string) *querypb.Field {
@@ -127,11 +162,18 @@ func (t *Type) ToField(name string) *querypb.Field {
 		Name:         name,
 		Type:         t.typ,
 		Charset:      uint32(t.collation),
-		ColumnLength: uint32(t.size),
+		ColumnLength: t.ColumnLength(),
 		Decimals:     uint32(t.scale),
 		Flags:        uint32(flags),
 	}
 	return f
+}
+
+// ColumnLength is the ColumnLength of a field of this type: its size, except
+// that a DECIMAL's precision is widened to the width MySQL sends in a column
+// definition.
+func (t *Type) ColumnLength() uint32 {
+	return columnLength(t.typ, t.size, t.scale)
 }
 
 func (t *Type) Type() sqltypes.Type {

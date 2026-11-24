@@ -742,7 +742,8 @@ func (call *builtinFromUnixtime) compile(c *compiler) (ctype, error) {
 		prec = maxTimePrec
 		c.asm.Fn_FROM_UNIXTIME_f()
 	case sqltypes.Decimal:
-		prec = arg.Size
+		// A DECIMAL's fraction is its scale; its size is its precision.
+		prec = arg.Scale
 		c.asm.Fn_FROM_UNIXTIME_d()
 	case sqltypes.Datetime, sqltypes.Date, sqltypes.Time, sqltypes.Timestamp:
 		prec = arg.Size
@@ -1719,11 +1720,17 @@ func (call *builtinUnixTimestamp) compile(c *compiler) (ctype, error) {
 	c.asm.Fn_UNIX_TIMESTAMP1()
 	c.asm.jumpDestination(skip)
 	switch arg.Type {
-	case sqltypes.Datetime, sqltypes.Time, sqltypes.Decimal, sqltypes.Timestamp:
+	case sqltypes.Datetime, sqltypes.Time, sqltypes.Timestamp:
 		if arg.Size == 0 {
 			return ctype{Type: sqltypes.Int64, Col: collationNumeric, Flag: arg.Flag}, nil
 		}
 		return ctype{Type: sqltypes.Decimal, Size: decimalSizeBase + arg.Size, Scale: arg.Size, Col: collationNumeric, Flag: arg.Flag}, nil
+	case sqltypes.Decimal:
+		// A DECIMAL's fraction is its scale; its size is its precision.
+		if arg.Scale == 0 {
+			return ctype{Type: sqltypes.Int64, Col: collationNumeric, Flag: arg.Flag}, nil
+		}
+		return ctype{Type: sqltypes.Decimal, Size: decimalSizeBase + arg.Scale, Scale: arg.Scale, Col: collationNumeric, Flag: arg.Flag}, nil
 	case sqltypes.Date, sqltypes.Int64, sqltypes.Uint64:
 		return ctype{Type: sqltypes.Int64, Col: collationNumeric, Flag: arg.Flag}, nil
 	case sqltypes.VarChar, sqltypes.VarBinary:

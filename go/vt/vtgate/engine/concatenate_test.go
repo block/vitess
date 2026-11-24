@@ -244,3 +244,48 @@ func TestConcatenateTypes(t *testing.T) {
 		})
 	}
 }
+
+// TestConcatenateDecimalIntegerDigits checks that a UNION of a DECIMAL and an
+// integer has room for the widest integer part next to the widest scale, as
+// MySQL aggregates them: DECIMAL(3,2) and a two-digit integer give
+// DECIMAL(4,2), so 99 is coerced to 99.00 rather than clamped to 9.99.
+func TestConcatenateDecimalIntegerDigits(t *testing.T) {
+	decimalField := &querypb.Field{Name: "d", Type: querypb.Type_DECIMAL, ColumnLength: 5, Decimals: 2, Charset: collations.CollationBinaryID}
+
+	tests := []struct {
+		name           string
+		intLength      uint32
+		expectedLength uint32
+	}{
+		{name: "known integer width", intLength: 2, expectedLength: 6},
+		// An integer with no width leaves the result's width unknown, so
+		// nothing is clamped.
+		{name: "unknown integer width", intLength: 0, expectedLength: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			intField := &querypb.Field{Name: "d", Type: querypb.Type_INT64, ColumnLength: tc.intLength, Charset: collations.CollationBinaryID}
+			concatenate := NewConcatenate([]Primitive{
+				&fakePrimitive{results: []*sqltypes.Result{{
+					Fields: []*querypb.Field{decimalField},
+					Rows:   [][]sqltypes.Value{{sqltypes.TestValue(sqltypes.Decimal, "1.50")}},
+				}}},
+				&fakePrimitive{results: []*sqltypes.Result{{
+					Fields: []*querypb.Field{intField},
+					Rows:   [][]sqltypes.Value{{sqltypes.NewInt64(99)}},
+				}}},
+			}, nil)
+
+			qr, err := concatenate.TryExecute(context.Background(), &noopVCursor{}, nil, true)
+			require.NoError(t, err)
+			require.Len(t, qr.Fields, 1)
+			require.Equal(t, querypb.Type_DECIMAL, qr.Fields[0].Type)
+			require.Equal(t, tc.expectedLength, qr.Fields[0].ColumnLength)
+			require.EqualValues(t, 2, qr.Fields[0].Decimals)
+			require.NoError(t, sqltypes.RowsEquals([][]sqltypes.Value{
+				{sqltypes.TestValue(sqltypes.Decimal, "1.50")},
+				{sqltypes.TestValue(sqltypes.Decimal, "99.00")},
+			}, qr.Rows))
+		})
+	}
+}

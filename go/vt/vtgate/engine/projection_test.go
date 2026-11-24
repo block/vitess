@@ -266,3 +266,77 @@ func TestFieldConversion(t *testing.T) {
 		})
 	}
 }
+
+// TestDecimalFieldWidth checks that a projected DECIMAL's ColumnLength is its
+// width as MySQL sends it (precision, a byte for the sign, a byte for the point
+// when there is a scale), whether the planner computed its precision or read it
+// from an input field's width.
+func TestDecimalFieldWidth(t *testing.T) {
+	unsigned := uint32(querypb.MySqlFlag_UNSIGNED_FLAG)
+	testCases := []struct {
+		name         string
+		expr         string
+		input        *querypb.Field
+		wantLength   uint32
+		wantDecimals uint32
+	}{
+		// Translate folds the CAST into the literal 1.0000, which keeps the
+		// scale but not the declared precision: DECIMAL(5,4), where MySQL
+		// reports DECIMAL(12,4) (width 14).
+		{name: "folded CAST AS DECIMAL(12,4)", expr: "CAST(1 AS DECIMAL(12,4))", wantLength: 7, wantDecimals: 4},
+		{name: "CAST AS DECIMAL(1,0)", expr: "CAST(1 AS DECIMAL(1,0))", wantLength: 2, wantDecimals: 0},
+		{name: "decimal literal", expr: "1.5", wantLength: 4, wantDecimals: 1},
+		{
+			name:       "signed DECIMAL(12,4) column",
+			expr:       ":c",
+			input:      &querypb.Field{Name: "c", Type: sqltypes.Decimal, ColumnLength: 14, Decimals: 4},
+			wantLength: 14, wantDecimals: 4,
+		},
+		{
+			// The projected field carries no UNSIGNED flag, so its width
+			// counts a sign byte: a client derives the same precision, 12.
+			name:       "unsigned DECIMAL(12,4) column",
+			expr:       ":c",
+			input:      &querypb.Field{Name: "c", Type: sqltypes.Decimal, ColumnLength: 13, Decimals: 4, Flags: unsigned},
+			wantLength: 14, wantDecimals: 4,
+		},
+		{
+			name:       "SUM(int) column",
+			expr:       ":c",
+			input:      &querypb.Field{Name: "c", Type: sqltypes.Decimal, ColumnLength: 33},
+			wantLength: 33, wantDecimals: 0,
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var expr sqlparser.Expr = &sqlparser.Offset{V: 0}
+			var input Primitive = &SingleRow{}
+			if testCase.input == nil {
+				var err error
+				expr, err = sqlparser.NewTestParser().ParseExpr(testCase.expr)
+				require.NoError(t, err)
+			} else {
+				input = &fakePrimitive{results: []*sqltypes.Result{{
+					Fields: []*querypb.Field{testCase.input},
+					Rows:   [][]sqltypes.Value{{sqltypes.MakeTrusted(sqltypes.Decimal, []byte("1.0000"))}},
+				}}}
+			}
+			evalExpr, err := evalengine.Translate(expr, &evalengine.Config{
+				Environment: vtenv.NewTestEnv(),
+				Collation:   collations.MySQL8().DefaultConnectionCharset(),
+			})
+			require.NoError(t, err)
+			proj := &Projection{
+				Cols:       []string{"col"},
+				Exprs:      []evalengine.Expr{evalExpr},
+				Input:      input,
+				noTxNeeded: noTxNeeded{},
+			}
+			qr, err := proj.TryExecute(context.Background(), &noopVCursor{}, nil, true)
+			require.NoError(t, err)
+			require.Equal(t, sqltypes.Decimal, qr.Fields[0].Type)
+			assert.Equal(t, testCase.wantLength, qr.Fields[0].ColumnLength)
+			assert.Equal(t, testCase.wantDecimals, qr.Fields[0].Decimals)
+		})
+	}
+}
