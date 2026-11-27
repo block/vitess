@@ -96,21 +96,27 @@ func (h *Horizon) AddPredicate(ctx *plancontext.PlanningContext, expr sqlparser.
 		panic(err)
 	}
 
-	// Check whether the rewritten predicate would reference an aggregate before doing the real rewrite.
-	// Rewriting a JoinPredicate stores the rewritten expression in the predicate tracker (see
-	// JoinPredicate.Clone), so rewriting it and then discarding the result would leave the original
-	// predicate pointing at the rewritten expression. The Filter below would then render e.g.
-	// `max(t.id)` instead of `dt.id`, and the query builder would put it in a HAVING clause that
-	// refers to columns that are not visible outside the derived table.
-	probe := expr
+	var newExpr sqlparser.Expr
 	if jp, ok := expr.(*predicates.JoinPredicate); ok {
-		probe = jp.Current()
-	}
-	if ctx.ContainsAggr(semantics.RewriteDerivedTableExpression(probe, tableInfo)) {
-		return newFilter(h, expr)
+		// Check whether the rewritten predicate would reference an aggregate before doing the real rewrite.
+		// Rewriting a JoinPredicate stores the rewritten expression in the predicate tracker (see
+		// JoinPredicate.Clone), so rewriting it and then discarding the result would leave the original
+		// predicate pointing at the rewritten expression. The Filter below would then render e.g.
+		// `max(t.id)` instead of `dt.id`, and the query builder would put it in a HAVING clause that
+		// refers to columns that are not visible outside the derived table.
+		// The tracker entry is nil if the predicate was already skipped; there is nothing to probe then.
+		if current := jp.Current(); current != nil &&
+			ctx.ContainsAggr(semantics.RewriteDerivedTableExpression(current, tableInfo)) {
+			return newFilter(h, expr)
+		}
+		newExpr = semantics.RewriteDerivedTableExpression(expr, tableInfo)
+	} else {
+		newExpr = semantics.RewriteDerivedTableExpression(expr, tableInfo)
+		if ctx.ContainsAggr(newExpr) {
+			return newFilter(h, expr)
+		}
 	}
 
-	newExpr := semantics.RewriteDerivedTableExpression(expr, tableInfo)
 	h.Source = h.Source.AddPredicate(ctx, newExpr)
 	return h
 }
