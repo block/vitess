@@ -173,6 +173,12 @@ type BaseTable struct {
 	// MySQL error message: ERROR 3756 (HY000): The primary key cannot be a functional index
 	PrimaryKey sqlparser.Columns  `json:"primary_key,omitempty"`
 	UniqueKeys [][]sqlparser.Expr `json:"unique_keys,omitempty"`
+
+	// PrimaryKeyDeclared is true when PrimaryKey comes from the VSchema
+	// declaration and not from schema tracking. A declared primary key says
+	// nothing about the table's other unique keys, so planning that needs
+	// complete index metadata must not rely on it.
+	PrimaryKeyDeclared bool `json:"primary_key_declared,omitempty"`
 }
 
 // GetTableName gets the sqlparser.TableName for the vindex Table.
@@ -832,6 +838,7 @@ func buildTables(ks *vschemapb.Keyspace, vschema *VSchema, ksvschema *KeyspaceSc
 			pkNames[name.Lowered()] = true
 			t.PrimaryKey = append(t.PrimaryKey, name)
 		}
+		t.PrimaryKeyDeclared = len(t.PrimaryKey) > 0
 
 		// Initialize ColumnVindexes.
 		for i, ind := range table.ColumnVindexes {

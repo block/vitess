@@ -204,5 +204,10 @@
     "comment": "scatter update with limit on a table without a primary key",
     "query": "update no_pk set col = 2 where col = 1 limit 10",
     "plan": "VT09015: schema tracking required"
+  },
+  {
+    "comment": "replace on a sharded table whose primary key is declared in the vschema is not rewritten to delete and insert",
+    "query": "replace into declared_pk(id, col) values (1, 2)",
+    "plan": "VT12001: unsupported: REPLACE INTO with sharded keyspace"
   }
 ]

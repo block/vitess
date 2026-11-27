@@ -114,10 +114,15 @@ func createOperatorFromInsert(ctx *plancontext.PlanningContext, ins *sqlparser.I
 
 	vTbl, routing := buildVindexTableForDML(ctx, tableInfo, qt, ins, "insert")
 
+	// A primary key declared in the VSchema says nothing about the other unique
+	// keys. Rewriting REPLACE with it would delete only rows that clash on the
+	// primary key, and the INSERT would then fail on a clash with a secondary
+	// unique key. Only rewrite when schema tracking supplied the index metadata.
+	trackedPK := len(vTbl.PrimaryKey) > 0 && !vTbl.PrimaryKeyDeclared
 	deleteBeforeInsert := false
 	if ins.Action == sqlparser.ReplaceAct &&
 		(ctx.SemTable.ForeignKeysPresent() || vTbl.Keyspace.Sharded) &&
-		(len(vTbl.PrimaryKey) > 0 || len(vTbl.UniqueKeys) > 0) {
+		(trackedPK || len(vTbl.UniqueKeys) > 0) {
 		// this needs a delete before insert as there can be row clash which needs to be deleted first.
 		ins.Action = sqlparser.InsertAct
 		deleteBeforeInsert = true

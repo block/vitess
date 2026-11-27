@@ -360,6 +360,12 @@ func TestDeclaredPrimaryKeyAndSchemaTracking(t *testing.T) {
 		return names
 	}
 
+	pkDeclared := func(vs *vindexes.VSchema, table string) bool {
+		tbl, err := vs.FindTable("ks", table)
+		require.NoError(t, err)
+		return tbl.PrimaryKeyDeclared
+	}
+
 	srvVSchema := makeTestSrvVSchema("ks", false, map[string]*vschemapb.Table{
 		"declared_only":    {PrimaryKey: []string{"a", "b"}},
 		"tracked_same":     {PrimaryKey: []string{"a", "b"}},
@@ -394,6 +400,13 @@ func TestDeclaredPrimaryKeyAndSchemaTracking(t *testing.T) {
 		assert.Equal(t, []string{"x"}, pkNames(vs, "tracked_override"))
 		assert.Empty(t, pkNames(vs, "tracked_no_pk"))
 		assert.Equal(t, []string{"id"}, pkNames(vs, "no_declared"))
+
+		// Only a primary key that schema tracking did not replace is marked as declared.
+		assert.True(t, pkDeclared(vs, "declared_only"))
+		assert.False(t, pkDeclared(vs, "tracked_same"))
+		assert.False(t, pkDeclared(vs, "tracked_override"))
+		assert.False(t, pkDeclared(vs, "tracked_no_pk"))
+		assert.False(t, pkDeclared(vs, "no_declared"))
 	}
 }
 

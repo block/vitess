@@ -281,6 +281,7 @@ func (vm *VSchemaManager) updateTableInfo(vschema *vindexes.VSchema, ks *vindexe
 		// The schema tracker knows this table, so its primary key takes
 		// precedence over any primary key declared in the VSchema.
 		rTbl.PrimaryKey = nil
+		rTbl.PrimaryKeyDeclared = false
 		for _, idxDef := range tblInfo.Indexes {
 			switch idxDef.Info.Type {
 			case sqlparser.IndexTypePrimary:

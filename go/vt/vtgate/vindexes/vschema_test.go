@@ -692,6 +692,7 @@ func TestVSchemaPrimaryKey(t *testing.T) {
 	// The declared order is kept, and a primary key does not require columns to be declared.
 	assert.Equal(t, []string{"b", "A"}, keyNames(t1))
 	assert.Empty(t, t1.Columns)
+	assert.True(t, t1.PrimaryKeyDeclared)
 
 	t2, err := got.FindTable("unsharded", "t2")
 	require.NoError(t, err)
@@ -700,6 +701,7 @@ func TestVSchemaPrimaryKey(t *testing.T) {
 	t3, err := got.FindTable("unsharded", "t3")
 	require.NoError(t, err)
 	assert.Empty(t, t3.PrimaryKey)
+	assert.False(t, t3.PrimaryKeyDeclared)
 
 	ref, err := got.FindTable("unsharded", "ref")
 	require.NoError(t, err)
