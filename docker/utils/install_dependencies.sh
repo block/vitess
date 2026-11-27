@@ -100,6 +100,38 @@ ensure_mysql_tarball_compat() {
 	fi
 }
 
+# Oracle's aarch64 tarball is a full distribution: it carries a debug build of
+# mysqld, the MeCab dictionaries, the static client libraries, and the headers
+# and manual pages, none of which a server image runs. Its mysqld also ships
+# unstripped, while the arm64 .deb packages the other architectures install
+# strip theirs. Dropping the four and stripping mysqld leaves arm64 with the
+# same payload the .deb flavors already produce.
+#
+# This runs in the same layer as the extraction. A later image that deletes
+# these keeps paying for them, because the layer that unpacked them is already
+# in the download.
+trim_mysql_tarball_install() {
+	if [[ "${ARCH}" != "arm64" ]]; then
+		return
+	fi
+
+	if [[ "${FLAVOR}" != "mysql80" && "${FLAVOR}" != "mysql84" ]]; then
+		return
+	fi
+
+	rm -f /usr/local/bin/mysqld-debug
+	rm -rf /usr/local/lib/mecab
+	rm -f /usr/local/lib/*.a
+	rm -rf /usr/local/include /usr/local/man
+
+	# strip is only needed here, so it is installed and removed again rather
+	# than left in the image. Purging with --auto-remove takes binutils'
+	# dependencies with it, leaving the package set as it was.
+	apt-get install -y --no-install-recommends binutils
+	strip /usr/local/bin/mysqld
+	apt-get purge -y --auto-remove binutils
+}
+
 # Install base packages that are common to all flavors.
 BASE_PACKAGES=(
 	bzip2
@@ -310,7 +342,9 @@ if [[ "$i" = "$MAX_RETRY" ]]; then
 	exit 1
 fi
 
-# Clean up files we won't need in the final image.
+# Clean up files we won't need in the final image. The tarball trim installs a
+# package of its own, so it has to run while the apt lists are still here.
+trim_mysql_tarball_install
 rm -rf /var/lib/apt/lists/*
 rm -rf /var/lib/mysql/
 rm -rf /tmp/*.deb
