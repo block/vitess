@@ -61713,6 +61713,9 @@ export namespace vschema {
         /** Table source. */
         source: string;
 
+        /** Table primary_key. */
+        primary_key: string[];
+
         /**
          * Creates a new Table instance using the specified properties.
          * @param [properties] Properties to set
@@ -61817,6 +61820,9 @@ export namespace vschema {
 
             /** Table source */
             source?: (string|null);
+
+            /** Table primary_key */
+            primary_key?: (string[]|null);
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];

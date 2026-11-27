@@ -173,6 +173,13 @@ type BaseTable struct {
 	// MySQL error message: ERROR 3756 (HY000): The primary key cannot be a functional index
 	PrimaryKey sqlparser.Columns  `json:"primary_key,omitempty"`
 	UniqueKeys [][]sqlparser.Expr `json:"unique_keys,omitempty"`
+
+	// PrimaryKeyTracked is true only when schema tracking handled this table
+	// and supplied its index metadata. A primary key declared in the VSchema
+	// leaves it false: such a key says nothing about the table's other unique
+	// keys, so planning that needs complete index metadata must not rely on
+	// it. It is not rendered in JSON.
+	PrimaryKeyTracked bool `json:"-"`
 }
 
 // GetTableName gets the sqlparser.TableName for the vindex Table.
@@ -799,6 +806,40 @@ func buildTables(ks *vschemapb.Keyspace, vschema *VSchema, ksvschema *KeyspaceSc
 				Values:        col.Values,
 			})
 		}
+
+		// Initialize PrimaryKey. This is the declared primary key, which is
+		// used when schema tracking does not provide one. It is accepted for
+		// all table types, in the same way that columns are.
+		pkNames := make(map[string]bool, len(table.PrimaryKey))
+		for _, pkCol := range table.PrimaryKey {
+			if pkCol == "" {
+				return vterrors.Errorf(
+					vtrpcpb.Code_INVALID_ARGUMENT,
+					"empty column name in primary key for table: %s",
+					tname,
+				)
+			}
+			name := sqlparser.NewIdentifierCI(pkCol)
+			if pkNames[name.Lowered()] {
+				return vterrors.Errorf(
+					vtrpcpb.Code_INVALID_ARGUMENT,
+					"duplicate column name '%v' in primary key for table: %s",
+					name,
+					tname,
+				)
+			}
+			if table.ColumnListAuthoritative && !colNames[name.Lowered()] {
+				return vterrors.Errorf(
+					vtrpcpb.Code_INVALID_ARGUMENT,
+					"primary key column '%v' is not in the authoritative column list for table: %s",
+					name,
+					tname,
+				)
+			}
+			pkNames[name.Lowered()] = true
+			t.PrimaryKey = append(t.PrimaryKey, name)
+		}
+		// PrimaryKeyTracked stays false: only schema tracking sets it.
 
 		// Initialize ColumnVindexes.
 		for i, ind := range table.ColumnVindexes {

@@ -278,6 +278,10 @@ func (vm *VSchemaManager) updateTableInfo(vschema *vindexes.VSchema, ks *vindexe
 			rTbl.ParentForeignKeys = append(rTbl.ParentForeignKeys, vindexes.NewParentFkInfo(parentTbl, fkDef))
 			parentTbl.ChildForeignKeys = append(parentTbl.ChildForeignKeys, vindexes.NewChildFkInfo(rTbl, fkDef))
 		}
+		// The schema tracker knows this table, so its primary key (possibly
+		// none) replaces any primary key declared in the VSchema.
+		rTbl.PrimaryKey = nil
+		rTbl.PrimaryKeyTracked = true
 		for _, idxDef := range tblInfo.Indexes {
 			switch idxDef.Info.Type {
 			case sqlparser.IndexTypePrimary:

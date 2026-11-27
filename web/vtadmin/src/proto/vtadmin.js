@@ -162998,6 +162998,7 @@ export const vschema = $root.vschema = (() => {
          * @property {string|null} [pinned] Table pinned
          * @property {boolean|null} [column_list_authoritative] Table column_list_authoritative
          * @property {string|null} [source] Table source
+         * @property {Array.<string>|null} [primary_key] Table primary_key
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -163025,6 +163026,7 @@ export const vschema = $root.vschema = (() => {
         const Table = function (properties) {
             this.column_vindexes = [];
             this.columns = [];
+            this.primary_key = [];
             if (properties)
                 for (let keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
                     if (properties[keys[i]] != null && keys[i] !== "__proto__")
@@ -163088,6 +163090,14 @@ export const vschema = $root.vschema = (() => {
         Table.prototype.source = "";
 
         /**
+         * Table primary_key.
+         * @member {Array.<string>} primary_key
+         * @memberof vschema.Table
+         * @instance
+         */
+        Table.prototype.primary_key = $util.emptyArray;
+
+        /**
          * Creates a new Table instance using the specified properties.
          * @function create
          * @memberof vschema.Table
@@ -163135,6 +163145,9 @@ export const vschema = $root.vschema = (() => {
                 writer.uint32(/* id 6, wireType 0 =*/48).bool(message.column_list_authoritative);
             if (message.source != null && $Object.hasOwnProperty.call(message, "source") && message.source !== "")
                 writer.uint32(/* id 7, wireType 2 =*/58).string(message.source);
+            if (message.primary_key != null && message.primary_key.length)
+                for (let i = 0; i < message.primary_key.length; ++i)
+                    writer.uint32(/* id 8, wireType 2 =*/66).string(message.primary_key[i]);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -163250,6 +163263,14 @@ export const vschema = $root.vschema = (() => {
                             delete message.source;
                         continue;
                     }
+                case 8: {
+                        if (wireType !== 2)
+                            break;
+                        if (!(message.primary_key && message.primary_key.length))
+                            message.primary_key = [];
+                        message.primary_key.push(reader.stringVerify());
+                        continue;
+                    }
                 }
                 reader.skipType(wireType, _depth, tag);
                 if (!reader.discardUnknown) {
@@ -163333,6 +163354,13 @@ export const vschema = $root.vschema = (() => {
             if (message.source != null && $Object.hasOwnProperty.call(message, "source"))
                 if (!$util.isString(message.source))
                     return "source: string expected";
+            if (message.primary_key != null && $Object.hasOwnProperty.call(message, "primary_key")) {
+                if (!$Array.isArray(message.primary_key))
+                    return "primary_key: array expected";
+                for (let i = 0; i < message.primary_key.length; ++i)
+                    if (!$util.isString(message.primary_key[i]))
+                        return "primary_key: string[] expected";
+            }
             return null;
         };
 
@@ -163391,6 +163419,13 @@ export const vschema = $root.vschema = (() => {
             if (object.source != null)
                 if (typeof object.source !== "string" || object.source.length)
                     message.source = $String(object.source);
+            if (object.primary_key) {
+                if (!$Array.isArray(object.primary_key))
+                    throw $TypeError(".vschema.Table.primary_key: array expected");
+                message.primary_key = $Array(object.primary_key.length);
+                for (let i = 0; i < object.primary_key.length; ++i)
+                    message.primary_key[i] = $String(object.primary_key[i]);
+            }
             return message;
         };
 
@@ -163414,6 +163449,7 @@ export const vschema = $root.vschema = (() => {
             if (options.arrays || options.defaults) {
                 object.column_vindexes = [];
                 object.columns = [];
+                object.primary_key = [];
             }
             if (options.defaults) {
                 object.type = "";
@@ -163442,6 +163478,11 @@ export const vschema = $root.vschema = (() => {
                 object.column_list_authoritative = message.column_list_authoritative;
             if (message.source != null && $Object.hasOwnProperty.call(message, "source"))
                 object.source = message.source;
+            if (message.primary_key && message.primary_key.length) {
+                object.primary_key = $Array(message.primary_key.length);
+                for (let j = 0; j < message.primary_key.length; ++j)
+                    object.primary_key[j] = message.primary_key[j];
+            }
             return object;
         };
 

@@ -331,12 +331,78 @@ func TestVSchemaUpdate(t *testing.T) {
 			vm.currentVschema = tcase.currentVSchema
 			vm.VSchemaUpdate(tcase.srvVschema, nil)
 
-			utils.MustMatchFn(".globalTables", ".uniqueVindexes")(t, tcase.expected, vs)
+			utils.MustMatchFn(".globalTables", ".uniqueVindexes", ".PrimaryKeyTracked")(t, tcase.expected, vs)
 			if tcase.srvVschema != nil {
 				utils.MustMatch(t, vs, vm.currentVschema, "currentVschema should have same reference as Vschema")
 			}
 		})
 	}
+}
+
+// TestDeclaredPrimaryKeyAndSchemaTracking tests that a primary key declared in the VSchema is used
+// when schema tracking does not know the table, and that the tracked primary key replaces it, rather
+// than being appended to it, when schema tracking does know the table.
+func TestDeclaredPrimaryKeyAndSchemaTracking(t *testing.T) {
+	primaryIndex := func(cols ...string) *sqlparser.IndexDefinition {
+		idx := &sqlparser.IndexDefinition{Info: &sqlparser.IndexInfo{Type: sqlparser.IndexTypePrimary}}
+		for _, col := range cols {
+			idx.Columns = append(idx.Columns, &sqlparser.IndexColumn{Column: sqlparser.NewIdentifierCI(col)})
+		}
+		return idx
+	}
+	pkNames := func(vs *vindexes.VSchema, table string) []string {
+		tbl, err := vs.FindTable("ks", table)
+		require.NoError(t, err)
+		names := []string{}
+		for _, col := range tbl.PrimaryKey {
+			names = append(names, col.String())
+		}
+		return names
+	}
+
+	pkTracked := func(vs *vindexes.VSchema, table string) bool {
+		tbl, err := vs.FindTable("ks", table)
+		require.NoError(t, err)
+		return tbl.PrimaryKeyTracked
+	}
+
+	srvVSchema := makeTestSrvVSchema("ks", false, map[string]*vschemapb.Table{
+		"declared_only":    {PrimaryKey: []string{"a", "b"}},
+		"tracked_same":     {PrimaryKey: []string{"a", "b"}},
+		"tracked_override": {PrimaryKey: []string{"a", "b"}},
+		"tracked_no_pk":    {PrimaryKey: []string{"a", "b"}},
+		"no_declared":      {},
+	})
+	schema := map[string]*vindexes.TableInfo{
+		"tracked_same":     {Indexes: []*sqlparser.IndexDefinition{primaryIndex("a", "b")}},
+		"tracked_override": {Indexes: []*sqlparser.IndexDefinition{primaryIndex("x")}},
+		"tracked_no_pk":    {},
+		"no_declared":      {Indexes: []*sqlparser.IndexDefinition{primaryIndex("id")}},
+	}
+
+	vm := &VSchemaManager{}
+	var vs *vindexes.VSchema
+	vm.subscriber = func(vschema *vindexes.VSchema, _ *VSchemaStats) {
+		vs = vschema
+	}
+	vm.schema = &fakeSchema{t: schema}
+
+	vm.VSchemaUpdate(srvVSchema, nil)
+	require.NotNil(t, vs)
+
+	assert.Equal(t, []string{"a", "b"}, pkNames(vs, "declared_only"))
+	assert.Equal(t, []string{"a", "b"}, pkNames(vs, "tracked_same"))
+	assert.Equal(t, []string{"x"}, pkNames(vs, "tracked_override"))
+	assert.Empty(t, pkNames(vs, "tracked_no_pk"))
+	assert.Equal(t, []string{"id"}, pkNames(vs, "no_declared"))
+
+	// Only a table that schema tracking handled is marked as tracked. A table
+	// that has only a declared primary key is not.
+	assert.False(t, pkTracked(vs, "declared_only"))
+	assert.True(t, pkTracked(vs, "tracked_same"))
+	assert.True(t, pkTracked(vs, "tracked_override"))
+	assert.True(t, pkTracked(vs, "tracked_no_pk"))
+	assert.True(t, pkTracked(vs, "no_declared"))
 }
 
 // TestKeyspaceRoutingRules tests that the vschema manager doens't panic in the presence of keyspace routing rules.
@@ -476,7 +542,7 @@ func TestRebuildVSchema(t *testing.T) {
 			vm.currentVschema = nil
 			vm.Rebuild()
 
-			utils.MustMatchFn(".globalTables", ".uniqueVindexes")(t, tcase.expected, vs)
+			utils.MustMatchFn(".globalTables", ".uniqueVindexes", ".PrimaryKeyTracked")(t, tcase.expected, vs)
 			if vs != nil {
 				utils.MustMatch(t, vs, vm.currentVschema, "currentVschema should have same reference as Vschema")
 			}
@@ -867,7 +933,7 @@ func TestVSchemaUpdateWithFKReferenceToInternalTables(t *testing.T) {
 		},
 	}, nil)
 
-	utils.MustMatchFn(".globalTables", ".uniqueVindexes")(t, &vindexes.VSchema{
+	utils.MustMatchFn(".globalTables", ".uniqueVindexes", ".PrimaryKeyTracked")(t, &vindexes.VSchema{
 		MirrorRules:      map[string]*vindexes.MirrorRule{},
 		RoutingRules:     map[string]*vindexes.RoutingRule{},
 		ViewRoutingRules: map[string]*vindexes.ViewRoutingRule{},

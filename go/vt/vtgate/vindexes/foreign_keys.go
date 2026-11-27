@@ -145,7 +145,8 @@ func (vschema *VSchema) AddForeignKey(ksname, childTableName string, fkConstrain
 	return nil
 }
 
-// AddPrimaryKey is for testing only.
+// AddPrimaryKey is for testing only. It stands in for schema tracking, so it
+// marks the primary key as tracked.
 func (vschema *VSchema) AddPrimaryKey(ksname, tblName string, cols []string) error {
 	ks, ok := vschema.Keyspaces[ksname]
 	if !ok {
@@ -158,6 +159,7 @@ func (vschema *VSchema) AddPrimaryKey(ksname, tblName string, cols []string) err
 	for _, col := range cols {
 		tbl.PrimaryKey = append(tbl.PrimaryKey, sqlparser.NewIdentifierCI(col))
 	}
+	tbl.PrimaryKeyTracked = true
 	return nil
 }
 

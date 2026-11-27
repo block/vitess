@@ -1,0 +1,297 @@
+[
+  {
+    "comment": "scatter delete with limit on a table whose primary key is declared in the vschema",
+    "query": "delete from declared_pk where col = 1 limit 10",
+    "plan": {
+      "Type": "Complex",
+      "QueryType": "DELETE",
+      "Original": "delete from declared_pk where col = 1 limit 10",
+      "Instructions": {
+        "OperatorType": "DMLWithInput",
+        "Offset": [
+          "0:[0]"
+        ],
+        "Inputs": [
+          {
+            "OperatorType": "Limit",
+            "Count": "10",
+            "Inputs": [
+              {
+                "OperatorType": "Route",
+                "Variant": "Scatter",
+                "Keyspace": {
+                  "Name": "user",
+                  "Sharded": true
+                },
+                "FieldQuery": "select declared_pk.id from declared_pk where 1 != 1",
+                "Query": "select declared_pk.id from declared_pk where col = 1 limit :__upper_limit"
+              }
+            ]
+          },
+          {
+            "OperatorType": "Delete",
+            "Variant": "IN",
+            "Keyspace": {
+              "Name": "user",
+              "Sharded": true
+            },
+            "Query": "delete from declared_pk where declared_pk.id in ::dml_vals",
+            "Values": [
+              "::dml_vals"
+            ],
+            "Vindex": "hash"
+          }
+        ]
+      },
+      "TablesUsed": [
+        "user.declared_pk"
+      ]
+    }
+  },
+  {
+    "comment": "scatter delete with limit on a table whose composite primary key is declared in the vschema",
+    "query": "delete from declared_composite_pk where col = 1 limit 10",
+    "plan": {
+      "Type": "Complex",
+      "QueryType": "DELETE",
+      "Original": "delete from declared_composite_pk where col = 1 limit 10",
+      "Instructions": {
+        "OperatorType": "DMLWithInput",
+        "Offset": [
+          "0:[0 1]"
+        ],
+        "Inputs": [
+          {
+            "OperatorType": "Limit",
+            "Count": "10",
+            "Inputs": [
+              {
+                "OperatorType": "Route",
+                "Variant": "Scatter",
+                "Keyspace": {
+                  "Name": "user",
+                  "Sharded": true
+                },
+                "FieldQuery": "select declared_composite_pk.id, declared_composite_pk.region_id from declared_composite_pk where 1 != 1",
+                "Query": "select declared_composite_pk.id, declared_composite_pk.region_id from declared_composite_pk where col = 1 limit :__upper_limit"
+              }
+            ]
+          },
+          {
+            "OperatorType": "Delete",
+            "Variant": "MultiEqual",
+            "Keyspace": {
+              "Name": "user",
+              "Sharded": true
+            },
+            "Query": "delete from declared_composite_pk where (declared_composite_pk.id, declared_composite_pk.region_id) in ::dml_vals",
+            "Values": [
+              "dml_vals:0"
+            ],
+            "Vindex": "hash"
+          }
+        ]
+      },
+      "TablesUsed": [
+        "user.declared_composite_pk"
+      ]
+    }
+  },
+  {
+    "comment": "scatter update with limit on a table whose primary key is declared in the vschema",
+    "query": "update declared_pk set col = 2 where col = 1 limit 10",
+    "plan": {
+      "Type": "Complex",
+      "QueryType": "UPDATE",
+      "Original": "update declared_pk set col = 2 where col = 1 limit 10",
+      "Instructions": {
+        "OperatorType": "DMLWithInput",
+        "Offset": [
+          "0:[0]"
+        ],
+        "Inputs": [
+          {
+            "OperatorType": "Limit",
+            "Count": "10",
+            "Inputs": [
+              {
+                "OperatorType": "Route",
+                "Variant": "Scatter",
+                "Keyspace": {
+                  "Name": "user",
+                  "Sharded": true
+                },
+                "FieldQuery": "select declared_pk.id from declared_pk where 1 != 1",
+                "Query": "select declared_pk.id from declared_pk where col = 1 limit :__upper_limit lock in share mode"
+              }
+            ]
+          },
+          {
+            "OperatorType": "Update",
+            "Variant": "IN",
+            "Keyspace": {
+              "Name": "user",
+              "Sharded": true
+            },
+            "Query": "update declared_pk set col = 2 where declared_pk.id in ::dml_vals",
+            "Values": [
+              "::dml_vals"
+            ],
+            "Vindex": "hash"
+          }
+        ]
+      },
+      "TablesUsed": [
+        "user.declared_pk"
+      ]
+    }
+  },
+  {
+    "comment": "scatter update with limit on a table whose composite primary key is declared in the vschema",
+    "query": "update declared_composite_pk set col = 2 where col = 1 limit 10",
+    "plan": {
+      "Type": "Complex",
+      "QueryType": "UPDATE",
+      "Original": "update declared_composite_pk set col = 2 where col = 1 limit 10",
+      "Instructions": {
+        "OperatorType": "DMLWithInput",
+        "Offset": [
+          "0:[0 1]"
+        ],
+        "Inputs": [
+          {
+            "OperatorType": "Limit",
+            "Count": "10",
+            "Inputs": [
+              {
+                "OperatorType": "Route",
+                "Variant": "Scatter",
+                "Keyspace": {
+                  "Name": "user",
+                  "Sharded": true
+                },
+                "FieldQuery": "select declared_composite_pk.id, declared_composite_pk.region_id from declared_composite_pk where 1 != 1",
+                "Query": "select declared_composite_pk.id, declared_composite_pk.region_id from declared_composite_pk where col = 1 limit :__upper_limit lock in share mode"
+              }
+            ]
+          },
+          {
+            "OperatorType": "Update",
+            "Variant": "MultiEqual",
+            "Keyspace": {
+              "Name": "user",
+              "Sharded": true
+            },
+            "Query": "update declared_composite_pk set col = 2 where (declared_composite_pk.id, declared_composite_pk.region_id) in ::dml_vals",
+            "Values": [
+              "dml_vals:0"
+            ],
+            "Vindex": "hash"
+          }
+        ]
+      },
+      "TablesUsed": [
+        "user.declared_composite_pk"
+      ]
+    }
+  },
+  {
+    "comment": "scatter delete with limit on a table without a primary key",
+    "query": "delete from no_pk where col = 1 limit 10",
+    "plan": "VT09015: schema tracking required"
+  },
+  {
+    "comment": "scatter update with limit on a table without a primary key",
+    "query": "update no_pk set col = 2 where col = 1 limit 10",
+    "plan": "VT09015: schema tracking required"
+  },
+  {
+    "comment": "replace on a sharded table whose primary key is declared in the vschema is not rewritten to delete and insert",
+    "query": "replace into declared_pk(id, col) values (1, 2)",
+    "plan": "VT12001: unsupported: REPLACE INTO with sharded keyspace"
+  },
+  {
+    "comment": "unsharded delete with limit on a table whose primary key is declared in the vschema",
+    "query": "delete from unsharded_declared_pk where col = 1 limit 10",
+    "plan": {
+      "Type": "Passthrough",
+      "QueryType": "DELETE",
+      "Original": "delete from unsharded_declared_pk where col = 1 limit 10",
+      "Instructions": {
+        "OperatorType": "Delete",
+        "Variant": "Unsharded",
+        "Keyspace": {
+          "Name": "main",
+          "Sharded": false
+        },
+        "Query": "delete from unsharded_declared_pk where col = 1 limit 10"
+      },
+      "TablesUsed": [
+        "main.unsharded_declared_pk"
+      ]
+    }
+  },
+  {
+    "comment": "unsharded update with limit on a table whose primary key is declared in the vschema",
+    "query": "update unsharded_declared_pk set col2 = 2 where col = 1 limit 10",
+    "plan": {
+      "Type": "Passthrough",
+      "QueryType": "UPDATE",
+      "Original": "update unsharded_declared_pk set col2 = 2 where col = 1 limit 10",
+      "Instructions": {
+        "OperatorType": "Update",
+        "Variant": "Unsharded",
+        "Keyspace": {
+          "Name": "main",
+          "Sharded": false
+        },
+        "Query": "update unsharded_declared_pk set col2 = 2 where col = 1 limit 10"
+      },
+      "TablesUsed": [
+        "main.unsharded_declared_pk"
+      ]
+    }
+  },
+  {
+    "comment": "unsharded delete with limit on a table that has no primary key",
+    "query": "delete from unsharded_no_pk where col = 1 limit 10",
+    "plan": {
+      "Type": "Passthrough",
+      "QueryType": "DELETE",
+      "Original": "delete from unsharded_no_pk where col = 1 limit 10",
+      "Instructions": {
+        "OperatorType": "Delete",
+        "Variant": "Unsharded",
+        "Keyspace": {
+          "Name": "main",
+          "Sharded": false
+        },
+        "Query": "delete from unsharded_no_pk where col = 1 limit 10"
+      },
+      "TablesUsed": [
+        "main.unsharded_no_pk"
+      ]
+    }
+  },
+  {
+    "comment": "unsharded update with limit on a table that has no primary key",
+    "query": "update unsharded_no_pk set col2 = 2 where col = 1 limit 10",
+    "plan": {
+      "Type": "Passthrough",
+      "QueryType": "UPDATE",
+      "Original": "update unsharded_no_pk set col2 = 2 where col = 1 limit 10",
+      "Instructions": {
+        "OperatorType": "Update",
+        "Variant": "Unsharded",
+        "Keyspace": {
+          "Name": "main",
+          "Sharded": false
+        },
+        "Query": "update unsharded_no_pk set col2 = 2 where col = 1 limit 10"
+      },
+      "TablesUsed": [
+        "main.unsharded_no_pk"
+      ]
+    }
+  }
+]
