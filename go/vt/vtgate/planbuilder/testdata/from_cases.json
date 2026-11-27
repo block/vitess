@@ -4999,5 +4999,51 @@
         "Query": "select information_schema.`table`.col from information_schema.`table` order by information_schema.`table`.`name` asc"
       }
     }
+  },
+  {
+    "comment": "join predicate on an aggregated derived table column is not rewritten into a HAVING on the original aggregate",
+    "query": "select u2.col from user u2 join (select max(u.col) as id from user u where u.col = 1 group by u.id) as d on u2.col = d.id where u2.id = 7",
+    "plan": {
+      "Type": "Join",
+      "QueryType": "SELECT",
+      "Original": "select u2.col from user u2 join (select max(u.col) as id from user u where u.col = 1 group by u.id) as d on u2.col = d.id where u2.id = 7",
+      "Instructions": {
+        "OperatorType": "Join",
+        "Variant": "Join",
+        "JoinColumnIndexes": "L:0",
+        "JoinVars": {
+          "u2_col": 0
+        },
+        "Inputs": [
+          {
+            "OperatorType": "Route",
+            "Variant": "EqualUnique",
+            "Keyspace": {
+              "Name": "user",
+              "Sharded": true
+            },
+            "FieldQuery": "select u2.col from `user` as u2 where 1 != 1",
+            "Query": "select u2.col from `user` as u2 where u2.id = 7",
+            "Values": [
+              "7"
+            ],
+            "Vindex": "user_index"
+          },
+          {
+            "OperatorType": "Route",
+            "Variant": "Scatter",
+            "Keyspace": {
+              "Name": "user",
+              "Sharded": true
+            },
+            "FieldQuery": "select 1 from (select max(u.col) as id from `user` as u where 1 != 1 group by u.id) as d where 1 != 1",
+            "Query": "select 1 from (select max(u.col) as id from `user` as u where u.col = 1 group by u.id) as d where d.id = :u2_col /* INT16 */"
+          }
+        ]
+      },
+      "TablesUsed": [
+        "user.user"
+      ]
+    }
   }
 ]

@@ -23,6 +23,7 @@ import (
 
 	"vitess.io/vitess/go/vt/sqlparser"
 	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vtgate/planbuilder/operators/predicates"
 	"vitess.io/vitess/go/vt/vtgate/planbuilder/plancontext"
 	"vitess.io/vitess/go/vt/vtgate/semantics"
 )
@@ -95,10 +96,21 @@ func (h *Horizon) AddPredicate(ctx *plancontext.PlanningContext, expr sqlparser.
 		panic(err)
 	}
 
-	newExpr := semantics.RewriteDerivedTableExpression(expr, tableInfo)
-	if ctx.ContainsAggr(newExpr) {
+	// Check whether the rewritten predicate would reference an aggregate before doing the real rewrite.
+	// Rewriting a JoinPredicate stores the rewritten expression in the predicate tracker (see
+	// JoinPredicate.Clone), so rewriting it and then discarding the result would leave the original
+	// predicate pointing at the rewritten expression. The Filter below would then render e.g.
+	// `max(t.id)` instead of `dt.id`, and the query builder would put it in a HAVING clause that
+	// refers to columns that are not visible outside the derived table.
+	probe := expr
+	if jp, ok := expr.(*predicates.JoinPredicate); ok {
+		probe = jp.Current()
+	}
+	if ctx.ContainsAggr(semantics.RewriteDerivedTableExpression(probe, tableInfo)) {
 		return newFilter(h, expr)
 	}
+
+	newExpr := semantics.RewriteDerivedTableExpression(expr, tableInfo)
 	h.Source = h.Source.AddPredicate(ctx, newExpr)
 	return h
 }
