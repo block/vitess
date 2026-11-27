@@ -113,6 +113,13 @@ message Table {
 
   // reference tables may optionally indicate their source table.
   string source = 7;
+
+  // primary_key lists, in order, the columns that make up the primary key
+  // of the table. It is used when schema tracking does not provide the
+  // primary key, for example in deployments where schema tracking is
+  // disabled. When schema tracking knows the table, the tracked primary
+  // key takes precedence over this list.
+  repeated string primary_key = 8;
 }
 
 // ColumnVindex is used to associate a column to a vindex.

@@ -435,7 +435,13 @@ type Table struct {
 	// us to expand 'select *' expressions.
 	ColumnListAuthoritative bool `protobuf:"varint,6,opt,name=column_list_authoritative,json=columnListAuthoritative,proto3" json:"column_list_authoritative,omitempty"`
 	// reference tables may optionally indicate their source table.
-	Source        string `protobuf:"bytes,7,opt,name=source,proto3" json:"source,omitempty"`
+	Source string `protobuf:"bytes,7,opt,name=source,proto3" json:"source,omitempty"`
+	// primary_key lists, in order, the columns that make up the primary key
+	// of the table. It is used when schema tracking does not provide the
+	// primary key, for example in deployments where schema tracking is
+	// disabled. When schema tracking knows the table, the tracked primary
+	// key takes precedence over this list.
+	PrimaryKey    []string `protobuf:"bytes,8,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -517,6 +523,13 @@ func (x *Table) GetSource() string {
 		return x.Source
 	}
 	return ""
+}
+
+func (x *Table) GetPrimaryKey() []string {
+	if x != nil {
+		return x.PrimaryKey
+	}
+	return nil
 }
 
 // ColumnVindex is used to associate a column to a vindex.
@@ -1174,7 +1187,7 @@ const file_vschema_proto_rawDesc = "" +
 	"\x05owner\x18\x03 \x01(\tR\x05owner\x1a9\n" +
 	"\vParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb1\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd2\x02\n" +
 	"\x05Table\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12>\n" +
 	"\x0fcolumn_vindexes\x18\x02 \x03(\v2\x15.vschema.ColumnVindexR\x0ecolumnVindexes\x12=\n" +
@@ -1182,7 +1195,9 @@ const file_vschema_proto_rawDesc = "" +
 	"\acolumns\x18\x04 \x03(\v2\x0f.vschema.ColumnR\acolumns\x12\x16\n" +
 	"\x06pinned\x18\x05 \x01(\tR\x06pinned\x12:\n" +
 	"\x19column_list_authoritative\x18\x06 \x01(\bR\x17columnListAuthoritative\x12\x16\n" +
-	"\x06source\x18\a \x01(\tR\x06source\"T\n" +
+	"\x06source\x18\a \x01(\tR\x06source\x12\x1f\n" +
+	"\vprimary_key\x18\b \x03(\tR\n" +
+	"primaryKey\"T\n" +
 	"\fColumnVindex\x12\x16\n" +
 	"\x06column\x18\x01 \x01(\tR\x06column\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
