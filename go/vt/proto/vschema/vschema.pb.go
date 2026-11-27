@@ -440,7 +440,19 @@ type Table struct {
 	// of the table. It is used when schema tracking does not provide the
 	// primary key, for example in deployments where schema tracking is
 	// disabled. When schema tracking knows the table, the tracked primary
-	// key takes precedence over this list.
+	// key replaces this list.
+	//
+	// The list must be exactly the primary key of the table (or another unique
+	// key whose columns are NOT NULL in every row). vtgate trusts it as unique
+	// and does not validate it against the database. DML that vtgate plans by
+	// key relies on it for correctness: for example, a multi-shard DELETE or
+	// UPDATE with a LIMIT selects the key values of the matching rows and then
+	// writes WHERE <key> IN (...). A wrong or stale key makes such a statement
+	// touch rows beyond the LIMIT, or rows that the WHERE clause did not match.
+	//
+	// Field number 8 is used by this fork only; there is no upstream
+	// equivalent at the time of writing. An upstream sync must check that
+	// upstream has not assigned field 8 of Table to something else.
 	PrimaryKey    []string `protobuf:"bytes,8,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
