@@ -650,6 +650,153 @@ func TestVSchemaColumnsFail(t *testing.T) {
 	require.EqualError(t, got.Keyspaces["unsharded"].Error, "duplicate column name 'c1' for table: t1")
 }
 
+func TestVSchemaPrimaryKey(t *testing.T) {
+	in := &vschemapb.SrvVSchema{
+		Keyspaces: map[string]*vschemapb.Keyspace{
+			"unsharded": {
+				Tables: map[string]*vschemapb.Table{
+					"t1": {
+						PrimaryKey: []string{"b", "A"},
+					},
+					"t2": {
+						Columns: []*vschemapb.Column{
+							{Name: "a"},
+							{Name: "b"},
+							{Name: "c"},
+						},
+						ColumnListAuthoritative: true,
+						PrimaryKey:              []string{"c", "a"},
+					},
+					"t3": {},
+					"ref": {
+						Type:       TypeReference,
+						PrimaryKey: []string{"id"},
+					},
+				},
+			},
+		},
+	}
+	got := BuildVSchema(in, sqlparser.NewTestParser())
+	require.NoError(t, got.Keyspaces["unsharded"].Error)
+
+	keyNames := func(tbl *BaseTable) []string {
+		var names []string
+		for _, col := range tbl.PrimaryKey {
+			names = append(names, col.String())
+		}
+		return names
+	}
+
+	t1, err := got.FindTable("unsharded", "t1")
+	require.NoError(t, err)
+	// The declared order is kept, and a primary key does not require columns to be declared.
+	assert.Equal(t, []string{"b", "A"}, keyNames(t1))
+	assert.Empty(t, t1.Columns)
+
+	t2, err := got.FindTable("unsharded", "t2")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"c", "a"}, keyNames(t2))
+
+	t3, err := got.FindTable("unsharded", "t3")
+	require.NoError(t, err)
+	assert.Empty(t, t3.PrimaryKey)
+
+	ref, err := got.FindTable("unsharded", "ref")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"id"}, keyNames(ref))
+}
+
+func TestVSchemaPrimaryKeyFail(t *testing.T) {
+	testcases := []struct {
+		name  string
+		table *vschemapb.Table
+		want  string
+	}{{
+		name:  "empty column name",
+		table: &vschemapb.Table{PrimaryKey: []string{"a", ""}},
+		want:  "empty column name in primary key for table: t1",
+	}, {
+		name:  "duplicate column",
+		table: &vschemapb.Table{PrimaryKey: []string{"a", "b", "a"}},
+		want:  "duplicate column name 'a' in primary key for table: t1",
+	}, {
+		name:  "duplicate column differing in case",
+		table: &vschemapb.Table{PrimaryKey: []string{"a", "A"}},
+		want:  "duplicate column name 'A' in primary key for table: t1",
+	}, {
+		name: "column not in authoritative list",
+		table: &vschemapb.Table{
+			Columns:                 []*vschemapb.Column{{Name: "a"}, {Name: "b"}},
+			ColumnListAuthoritative: true,
+			PrimaryKey:              []string{"a", "c"},
+		},
+		want: "primary key column 'c' is not in the authoritative column list for table: t1",
+	}}
+	for _, tcase := range testcases {
+		t.Run(tcase.name, func(t *testing.T) {
+			in := &vschemapb.SrvVSchema{
+				Keyspaces: map[string]*vschemapb.Keyspace{
+					"unsharded": {
+						Tables: map[string]*vschemapb.Table{"t1": tcase.table},
+					},
+				},
+			}
+			got := BuildVSchema(in, sqlparser.NewTestParser())
+			require.EqualError(t, got.Keyspaces["unsharded"].Error, tcase.want)
+		})
+	}
+
+	t.Run("column not in non-authoritative list is accepted", func(t *testing.T) {
+		in := &vschemapb.SrvVSchema{
+			Keyspaces: map[string]*vschemapb.Keyspace{
+				"unsharded": {
+					Tables: map[string]*vschemapb.Table{
+						"t1": {
+							Columns:    []*vschemapb.Column{{Name: "a"}},
+							PrimaryKey: []string{"a", "c"},
+						},
+					},
+				},
+			},
+		}
+		got := BuildVSchema(in, sqlparser.NewTestParser())
+		require.NoError(t, got.Keyspaces["unsharded"].Error)
+	})
+}
+
+func TestVSchemaPrimaryKeyPBJSON(t *testing.T) {
+	in := `{"tables": {"t1": {"primary_key": ["a", "b"]}}}`
+	var got vschemapb.Keyspace
+	require.NoError(t, json2.UnmarshalPB([]byte(in), &got))
+	want := &vschemapb.Keyspace{
+		Tables: map[string]*vschemapb.Table{
+			"t1": {PrimaryKey: []string{"a", "b"}},
+		},
+	}
+	assert.True(t, proto.Equal(&got, want), "got %v, want %v", &got, want)
+
+	// Round trip.
+	out, err := json2.MarshalPB(&got)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"tables": {"t1": {"primaryKey": ["a", "b"]}}}`, string(out))
+	var again vschemapb.Keyspace
+	require.NoError(t, json2.UnmarshalPB(out, &again))
+	assert.True(t, proto.Equal(&got, &again))
+
+	// The keyspace validates, and an invalid primary key is rejected, through BuildKeyspace.
+	ks, err := BuildKeyspace(&got, sqlparser.NewTestParser())
+	require.NoError(t, err)
+	require.Len(t, ks.Tables["t1"].PrimaryKey, 2)
+
+	bad := &vschemapb.Keyspace{
+		Tables: map[string]*vschemapb.Table{
+			"t1": {PrimaryKey: []string{"a", "a"}},
+		},
+	}
+	_, err = BuildKeyspace(bad, sqlparser.NewTestParser())
+	require.EqualError(t, err, "duplicate column name 'a' in primary key for table: t1")
+}
+
 func TestVSchemaPinned(t *testing.T) {
 	good := vschemapb.SrvVSchema{
 		Keyspaces: map[string]*vschemapb.Keyspace{

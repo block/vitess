@@ -339,6 +339,64 @@ func TestVSchemaUpdate(t *testing.T) {
 	}
 }
 
+// TestDeclaredPrimaryKeyAndSchemaTracking tests that a primary key declared in the VSchema is used
+// when schema tracking does not know the table, and that the tracked primary key replaces it, rather
+// than being appended to it, when schema tracking does know the table.
+func TestDeclaredPrimaryKeyAndSchemaTracking(t *testing.T) {
+	primaryIndex := func(cols ...string) *sqlparser.IndexDefinition {
+		idx := &sqlparser.IndexDefinition{Info: &sqlparser.IndexInfo{Type: sqlparser.IndexTypePrimary}}
+		for _, col := range cols {
+			idx.Columns = append(idx.Columns, &sqlparser.IndexColumn{Column: sqlparser.NewIdentifierCI(col)})
+		}
+		return idx
+	}
+	pkNames := func(vs *vindexes.VSchema, table string) []string {
+		tbl, err := vs.FindTable("ks", table)
+		require.NoError(t, err)
+		names := []string{}
+		for _, col := range tbl.PrimaryKey {
+			names = append(names, col.String())
+		}
+		return names
+	}
+
+	srvVSchema := makeTestSrvVSchema("ks", false, map[string]*vschemapb.Table{
+		"declared_only":    {PrimaryKey: []string{"a", "b"}},
+		"tracked_same":     {PrimaryKey: []string{"a", "b"}},
+		"tracked_override": {PrimaryKey: []string{"a", "b"}},
+		"tracked_no_pk":    {PrimaryKey: []string{"a", "b"}},
+		"no_declared":      {},
+	})
+	schema := map[string]*vindexes.TableInfo{
+		"tracked_same":     {Indexes: []*sqlparser.IndexDefinition{primaryIndex("a", "b")}},
+		"tracked_override": {Indexes: []*sqlparser.IndexDefinition{primaryIndex("x")}},
+		"tracked_no_pk":    {},
+		"no_declared":      {Indexes: []*sqlparser.IndexDefinition{primaryIndex("id")}},
+	}
+
+	vm := &VSchemaManager{}
+	var vs *vindexes.VSchema
+	vm.subscriber = func(vschema *vindexes.VSchema, _ *VSchemaStats) {
+		vs = vschema
+	}
+	vm.schema = &fakeSchema{t: schema}
+
+	// Run the update twice, to check that rebuilding does not accumulate primary key columns.
+	for range 2 {
+		vs = nil
+		vm.currentSrvVschema = nil
+		vm.currentVschema = nil
+		vm.VSchemaUpdate(srvVSchema, nil)
+		require.NotNil(t, vs)
+
+		assert.Equal(t, []string{"a", "b"}, pkNames(vs, "declared_only"))
+		assert.Equal(t, []string{"a", "b"}, pkNames(vs, "tracked_same"))
+		assert.Equal(t, []string{"x"}, pkNames(vs, "tracked_override"))
+		assert.Empty(t, pkNames(vs, "tracked_no_pk"))
+		assert.Equal(t, []string{"id"}, pkNames(vs, "no_declared"))
+	}
+}
+
 // TestKeyspaceRoutingRules tests that the vschema manager doens't panic in the presence of keyspace routing rules.
 func TestKeyspaceRoutingRules(t *testing.T) {
 	cols1 := []vindexes.Column{{

@@ -800,6 +800,39 @@ func buildTables(ks *vschemapb.Keyspace, vschema *VSchema, ksvschema *KeyspaceSc
 			})
 		}
 
+		// Initialize PrimaryKey. This is the declared primary key, which is
+		// used when schema tracking does not provide one. It is accepted for
+		// all table types, in the same way that columns are.
+		pkNames := make(map[string]bool, len(table.PrimaryKey))
+		for _, pkCol := range table.PrimaryKey {
+			if pkCol == "" {
+				return vterrors.Errorf(
+					vtrpcpb.Code_INVALID_ARGUMENT,
+					"empty column name in primary key for table: %s",
+					tname,
+				)
+			}
+			name := sqlparser.NewIdentifierCI(pkCol)
+			if pkNames[name.Lowered()] {
+				return vterrors.Errorf(
+					vtrpcpb.Code_INVALID_ARGUMENT,
+					"duplicate column name '%v' in primary key for table: %s",
+					name,
+					tname,
+				)
+			}
+			if table.ColumnListAuthoritative && !colNames[name.Lowered()] {
+				return vterrors.Errorf(
+					vtrpcpb.Code_INVALID_ARGUMENT,
+					"primary key column '%v' is not in the authoritative column list for table: %s",
+					name,
+					tname,
+				)
+			}
+			pkNames[name.Lowered()] = true
+			t.PrimaryKey = append(t.PrimaryKey, name)
+		}
+
 		// Initialize ColumnVindexes.
 		for i, ind := range table.ColumnVindexes {
 			vindexInfo, ok := ks.Vindexes[ind.Name]
