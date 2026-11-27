@@ -54,7 +54,6 @@ import (
 	"fmt"
 	"log/syslog"
 	"os"
-	"testing"
 
 	"vitess.io/vitess/go/event"
 	"vitess.io/vitess/go/vt/log"
@@ -157,11 +156,6 @@ func init() {
 	servenv.OnInit(func() {
 		initSyslog()
 	})
-
-	// We still do the init of syslog if we are testing this package.
-	if testing.Testing() {
-		initSyslog()
-	}
 }
 
 func initSyslog() {
