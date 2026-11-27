@@ -118,7 +118,7 @@ func createOperatorFromInsert(ctx *plancontext.PlanningContext, ins *sqlparser.I
 	// keys. Rewriting REPLACE with it would delete only rows that clash on the
 	// primary key, and the INSERT would then fail on a clash with a secondary
 	// unique key. Only rewrite when schema tracking supplied the index metadata.
-	trackedPK := len(vTbl.PrimaryKey) > 0 && !vTbl.PrimaryKeyDeclared
+	trackedPK := len(vTbl.PrimaryKey) > 0 && vTbl.PrimaryKeyTracked
 	deleteBeforeInsert := false
 	if ins.Action == sqlparser.ReplaceAct &&
 		(ctx.SemTable.ForeignKeysPresent() || vTbl.Keyspace.Sharded) &&

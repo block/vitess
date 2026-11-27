@@ -672,12 +672,24 @@ func TestVSchemaPrimaryKey(t *testing.T) {
 						Type:       TypeReference,
 						PrimaryKey: []string{"id"},
 					},
+					"src": {},
+				},
+			},
+			"sharded": {
+				Sharded: true,
+				Tables: map[string]*vschemapb.Table{
+					"ref_with_source": {
+						Type:       TypeReference,
+						Source:     "unsharded.src",
+						PrimaryKey: []string{"id", "region"},
+					},
 				},
 			},
 		},
 	}
 	got := BuildVSchema(in, sqlparser.NewTestParser())
 	require.NoError(t, got.Keyspaces["unsharded"].Error)
+	require.NoError(t, got.Keyspaces["sharded"].Error)
 
 	keyNames := func(tbl *BaseTable) []string {
 		var names []string
@@ -692,7 +704,8 @@ func TestVSchemaPrimaryKey(t *testing.T) {
 	// The declared order is kept, and a primary key does not require columns to be declared.
 	assert.Equal(t, []string{"b", "A"}, keyNames(t1))
 	assert.Empty(t, t1.Columns)
-	assert.True(t, t1.PrimaryKeyDeclared)
+	// A declared primary key is not tracked: only schema tracking sets that.
+	assert.False(t, t1.PrimaryKeyTracked)
 
 	t2, err := got.FindTable("unsharded", "t2")
 	require.NoError(t, err)
@@ -701,11 +714,17 @@ func TestVSchemaPrimaryKey(t *testing.T) {
 	t3, err := got.FindTable("unsharded", "t3")
 	require.NoError(t, err)
 	assert.Empty(t, t3.PrimaryKey)
-	assert.False(t, t3.PrimaryKeyDeclared)
+	assert.False(t, t3.PrimaryKeyTracked)
 
 	ref, err := got.FindTable("unsharded", "ref")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"id"}, keyNames(ref))
+
+	// A reference table with a source accepts a declared primary key too.
+	refWithSource, err := got.FindTable("sharded", "ref_with_source")
+	require.NoError(t, err)
+	require.NotNil(t, refWithSource.Source)
+	assert.Equal(t, []string{"id", "region"}, keyNames(refWithSource))
 }
 
 func TestVSchemaPrimaryKeyFail(t *testing.T) {

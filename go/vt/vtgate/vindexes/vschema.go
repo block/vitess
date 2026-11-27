@@ -174,11 +174,12 @@ type BaseTable struct {
 	PrimaryKey sqlparser.Columns  `json:"primary_key,omitempty"`
 	UniqueKeys [][]sqlparser.Expr `json:"unique_keys,omitempty"`
 
-	// PrimaryKeyDeclared is true when PrimaryKey comes from the VSchema
-	// declaration and not from schema tracking. A declared primary key says
-	// nothing about the table's other unique keys, so planning that needs
-	// complete index metadata must not rely on it.
-	PrimaryKeyDeclared bool `json:"primary_key_declared,omitempty"`
+	// PrimaryKeyTracked is true only when schema tracking handled this table
+	// and supplied its index metadata. A primary key declared in the VSchema
+	// leaves it false: such a key says nothing about the table's other unique
+	// keys, so planning that needs complete index metadata must not rely on
+	// it. It is not rendered in JSON.
+	PrimaryKeyTracked bool `json:"-"`
 }
 
 // GetTableName gets the sqlparser.TableName for the vindex Table.
@@ -838,7 +839,7 @@ func buildTables(ks *vschemapb.Keyspace, vschema *VSchema, ksvschema *KeyspaceSc
 			pkNames[name.Lowered()] = true
 			t.PrimaryKey = append(t.PrimaryKey, name)
 		}
-		t.PrimaryKeyDeclared = len(t.PrimaryKey) > 0
+		// PrimaryKeyTracked stays false: only schema tracking sets it.
 
 		// Initialize ColumnVindexes.
 		for i, ind := range table.ColumnVindexes {

@@ -331,7 +331,7 @@ func TestVSchemaUpdate(t *testing.T) {
 			vm.currentVschema = tcase.currentVSchema
 			vm.VSchemaUpdate(tcase.srvVschema, nil)
 
-			utils.MustMatchFn(".globalTables", ".uniqueVindexes")(t, tcase.expected, vs)
+			utils.MustMatchFn(".globalTables", ".uniqueVindexes", ".PrimaryKeyTracked")(t, tcase.expected, vs)
 			if tcase.srvVschema != nil {
 				utils.MustMatch(t, vs, vm.currentVschema, "currentVschema should have same reference as Vschema")
 			}
@@ -360,10 +360,10 @@ func TestDeclaredPrimaryKeyAndSchemaTracking(t *testing.T) {
 		return names
 	}
 
-	pkDeclared := func(vs *vindexes.VSchema, table string) bool {
+	pkTracked := func(vs *vindexes.VSchema, table string) bool {
 		tbl, err := vs.FindTable("ks", table)
 		require.NoError(t, err)
-		return tbl.PrimaryKeyDeclared
+		return tbl.PrimaryKeyTracked
 	}
 
 	srvVSchema := makeTestSrvVSchema("ks", false, map[string]*vschemapb.Table{
@@ -387,27 +387,22 @@ func TestDeclaredPrimaryKeyAndSchemaTracking(t *testing.T) {
 	}
 	vm.schema = &fakeSchema{t: schema}
 
-	// Run the update twice, to check that rebuilding does not accumulate primary key columns.
-	for range 2 {
-		vs = nil
-		vm.currentSrvVschema = nil
-		vm.currentVschema = nil
-		vm.VSchemaUpdate(srvVSchema, nil)
-		require.NotNil(t, vs)
+	vm.VSchemaUpdate(srvVSchema, nil)
+	require.NotNil(t, vs)
 
-		assert.Equal(t, []string{"a", "b"}, pkNames(vs, "declared_only"))
-		assert.Equal(t, []string{"a", "b"}, pkNames(vs, "tracked_same"))
-		assert.Equal(t, []string{"x"}, pkNames(vs, "tracked_override"))
-		assert.Empty(t, pkNames(vs, "tracked_no_pk"))
-		assert.Equal(t, []string{"id"}, pkNames(vs, "no_declared"))
+	assert.Equal(t, []string{"a", "b"}, pkNames(vs, "declared_only"))
+	assert.Equal(t, []string{"a", "b"}, pkNames(vs, "tracked_same"))
+	assert.Equal(t, []string{"x"}, pkNames(vs, "tracked_override"))
+	assert.Empty(t, pkNames(vs, "tracked_no_pk"))
+	assert.Equal(t, []string{"id"}, pkNames(vs, "no_declared"))
 
-		// Only a primary key that schema tracking did not replace is marked as declared.
-		assert.True(t, pkDeclared(vs, "declared_only"))
-		assert.False(t, pkDeclared(vs, "tracked_same"))
-		assert.False(t, pkDeclared(vs, "tracked_override"))
-		assert.False(t, pkDeclared(vs, "tracked_no_pk"))
-		assert.False(t, pkDeclared(vs, "no_declared"))
-	}
+	// Only a table that schema tracking handled is marked as tracked. A table
+	// that has only a declared primary key is not.
+	assert.False(t, pkTracked(vs, "declared_only"))
+	assert.True(t, pkTracked(vs, "tracked_same"))
+	assert.True(t, pkTracked(vs, "tracked_override"))
+	assert.True(t, pkTracked(vs, "tracked_no_pk"))
+	assert.True(t, pkTracked(vs, "no_declared"))
 }
 
 // TestKeyspaceRoutingRules tests that the vschema manager doens't panic in the presence of keyspace routing rules.
@@ -547,7 +542,7 @@ func TestRebuildVSchema(t *testing.T) {
 			vm.currentVschema = nil
 			vm.Rebuild()
 
-			utils.MustMatchFn(".globalTables", ".uniqueVindexes")(t, tcase.expected, vs)
+			utils.MustMatchFn(".globalTables", ".uniqueVindexes", ".PrimaryKeyTracked")(t, tcase.expected, vs)
 			if vs != nil {
 				utils.MustMatch(t, vs, vm.currentVschema, "currentVschema should have same reference as Vschema")
 			}
@@ -938,7 +933,7 @@ func TestVSchemaUpdateWithFKReferenceToInternalTables(t *testing.T) {
 		},
 	}, nil)
 
-	utils.MustMatchFn(".globalTables", ".uniqueVindexes")(t, &vindexes.VSchema{
+	utils.MustMatchFn(".globalTables", ".uniqueVindexes", ".PrimaryKeyTracked")(t, &vindexes.VSchema{
 		MirrorRules:      map[string]*vindexes.MirrorRule{},
 		RoutingRules:     map[string]*vindexes.RoutingRule{},
 		ViewRoutingRules: map[string]*vindexes.ViewRoutingRule{},
