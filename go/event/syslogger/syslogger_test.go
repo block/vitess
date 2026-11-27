@@ -67,6 +67,15 @@ func (fw *fakeWriter) Notice(msg string) error  { return fw.write(syslog.LOG_NOT
 func (fw *fakeWriter) Warning(msg string) error { return fw.write(syslog.LOG_WARNING, msg) }
 
 // TestSyslog checks that our callback works.
+// The package's own tests still connect to syslog at startup, as a binary
+// does when servenv initializes. This lives in a test file, not behind
+// testing.Testing() in syslogger.go: that is true in every test binary that
+// imports this package, and initSyslog logs an error to stderr when there is
+// no syslog daemon.
+func init() {
+	initSyslog()
+}
+
 func TestSyslog(t *testing.T) {
 	writer = &fakeWriter{}
 
