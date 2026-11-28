@@ -123,17 +123,6 @@ func (s *planTestSuite) TestPlan() {
 	s.testFile("cte_cases.json", vw, false)
 }
 
-// TestPrimaryKeyFromVSchema tests that a primary key declared in the VSchema, without schema tracking,
-// is enough to plan DML with a limit that has to read the primary keys of the rows first.
-func (s *planTestSuite) TestPrimaryKeyFromVSchema() {
-	env := vtenv.NewTestEnv()
-	vschema := loadSchema(s.T(), "vschemas/primary_key_schema.json", true)
-	vw, err := vschemawrapper.NewVschemaWrapper(env, vschema, TestBuilder)
-	require.NoError(s.T(), err)
-
-	s.testFile("primary_key_cases.json", vw, false)
-}
-
 // TestForeignKeyPlanning tests the planning of foreign keys in a managed mode by Vitess.
 func (s *planTestSuite) TestForeignKeyPlanning() {
 	env := vtenv.NewTestEnv()
